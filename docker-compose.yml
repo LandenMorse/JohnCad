@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-johncad}
+      POSTGRES_USER: ${POSTGRES_USER:-johncad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-johncad}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-johncad}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+    volumes:
+      - private_media_data:/app/private_media
+    depends_on:
+      db:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+      # - "443:443"   # uncomment once TLS certs are set up, see nginx/nginx.conf
+    depends_on:
+      - web
+
+volumes:
+  postgres_data:
+  private_media_data:

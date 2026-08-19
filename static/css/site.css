@@ -1,0 +1,210 @@
+:root {
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --primary: #6c5ce7;
+  --primary-dark: #5541d6;
+  --accent: #00cec9;
+  --text: #1e2130;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --danger: #ff5c72;
+  --danger-dark: #e2445d;
+  --radius: 12px;
+  --shadow: 0 4px 16px rgba(31, 41, 55, 0.08);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: linear-gradient(180deg, #eef1ff 0%, var(--bg) 320px);
+  color: var(--text);
+  margin: 0;
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 1.25rem 3rem;
+}
+
+nav.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 0;
+  margin-bottom: 2rem;
+}
+
+.brand {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--primary-dark);
+  text-decoration: none;
+  letter-spacing: -0.02em;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.95rem;
+}
+
+.nav-links a {
+  color: var(--text);
+  text-decoration: none;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+}
+
+.nav-links a:hover {
+  background: rgba(108, 92, 231, 0.1);
+}
+
+.nav-links .username {
+  color: var(--muted);
+}
+
+.nav-links .logout-form {
+  margin: 0;
+  display: inline;
+}
+
+.nav-links .link-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 400;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.nav-links .link-btn:hover {
+  background: rgba(108, 92, 231, 0.1);
+}
+
+h1 {
+  font-size: 1.8rem;
+  margin-bottom: 0.25rem;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+form p { margin: 0 0 1rem; }
+
+label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-bottom: 0.35rem;
+  color: var(--text);
+}
+
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="file"] {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  background: #fbfbfe;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.15);
+}
+
+button, .btn {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+button:hover, .btn:hover { background: var(--primary-dark); }
+
+button.btn-danger { background: var(--danger); padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+button.btn-danger:hover { background: var(--danger-dark); }
+
+table { width: 100%; border-collapse: collapse; }
+
+th {
+  text-align: left;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  padding: 0.5rem 0.6rem;
+  border-bottom: 2px solid var(--border);
+}
+
+td {
+  padding: 0.65rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.95rem;
+}
+
+tr:last-child td { border-bottom: none; }
+
+td a { color: var(--primary-dark); text-decoration: none; font-weight: 600; }
+td a:hover { text-decoration: underline; }
+
+.empty-row td { color: var(--muted); text-align: center; padding: 1.5rem; }
+
+.errorlist {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+  color: var(--danger-dark);
+  font-size: 0.85rem;
+}
+
+.helptext { color: var(--muted); font-size: 0.8rem; display: block; margin-top: 0.2rem; }
+
+.auth-card { max-width: 380px; margin: 3rem auto 0; }
+
+.auth-footer { text-align: center; margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
+.auth-footer a { color: var(--primary-dark); font-weight: 600; text-decoration: none; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14151f;
+    --surface: #1d1f2b;
+    --text: #f1f2f8;
+    --muted: #9498a8;
+    --border: #2c2f3f;
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+  body { background: linear-gradient(180deg, #1a1c2b 0%, var(--bg) 320px); }
+  input[type="text"], input[type="password"], input[type="email"], input[type="file"] {
+    background: #14151f;
+    color: var(--text);
+  }
+}

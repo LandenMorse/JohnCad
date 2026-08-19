@@ -1,0 +1,39 @@
+{% extends "attachments/base.html" %}
+{% block title %}My Attachments{% endblock %}
+{% block content %}
+<h1>My Attachments</h1>
+<p class="subtitle">Upload and manage your .stl files.</p>
+
+<div class="card">
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Upload</button>
+    </form>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Name</th><th>File</th><th>Uploaded</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for attachment in attachments %}
+            <tr>
+                <td>{{ attachment.name }}</td>
+                <td><a href="{% url 'api-attachment-download' attachment.pk %}">{{ attachment.file.name }}</a></td>
+                <td>{{ attachment.uploaded_at }}</td>
+                <td>
+                    <form method="post" action="{% url 'attachment-delete' attachment.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="4">No attachments yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,31 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}JohnCad{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/site.css' %}">
+</head>
+<body>
+<div class="page">
+    <nav class="topbar">
+        <a class="brand" href="{% url 'attachment-list' %}">JohnCad</a>
+        <div class="nav-links">
+            {% if user.is_authenticated %}
+                <span class="username">{{ user.username }}</span>
+                {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+                <form class="logout-form" method="post" action="{% url 'logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="link-btn">Log out</button>
+                </form>
+            {% else %}
+                <a href="{% url 'login' %}">Log in</a>
+                <a class="btn" href="{% url 'signup' %}">Sign up</a>
+            {% endif %}
+        </div>
+    </nav>
+    {% block content %}{% endblock %}
+</div>
+</body>
+</html>

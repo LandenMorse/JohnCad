@@ -1,0 +1,14 @@
+{% extends "attachments/base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="card auth-card">
+    <h1>Welcome back</h1>
+    <p class="subtitle">Log in to manage your attachments.</p>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Log in</button>
+    </form>
+</div>
+<p class="auth-footer">No account yet? <a href="{% url 'signup' %}">Sign up</a></p>
+{% endblock %}
