@@ -1,0 +1,350 @@
+# JohnCad
+
+A Django app for a small 3D-printing pipeline: Students upload `.stl` files,
+request prints, an admin reviews and approves them, PrusaSlicer converts the
+approved files to G-code, and an Arduino UNO R4 WiFi controller at the
+printers pulls finished jobs down to feed to the printers via microSD card.
+
+Two different Pi/board references show up in this project — don't confuse
+them: the **JohnCad server** (Django + Postgres) is intended to run on a
+Raspberry Pi; the **printer controller** at the printers is a separate
+Arduino UNO R4 WiFi, not a Pi at all.
+
+See `CLAUDE.md` for the current implementation status and open items, and
+`PRINTER_CONTROLLER_API.md` for the printer controller's API contract in detail.
+
+## Contents
+
+- [Setup](#setup)
+- [Helper commands](#helper-commands)
+- [Program layout](#program-layout)
+- [Models](#models)
+- [Features](#features)
+
+## Setup
+
+### Requirements
+
+- Python 3.13
+- Docker + Docker Compose (for Postgres locally, and for the full
+  containerized stack)
+- (Production only) [PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/)
+  CLI on `PATH`
+
+### 1. Clone and create a virtualenv
+
+```bash
+git clone <repo-url> JohnCad
+cd JohnCad
+python -m venv .venv
+source .venv/Scripts/activate   # Windows Git Bash
+# or: source .venv/bin/activate  # Linux/Mac
+pip install -r requirements.txt
+```
+
+### 2. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` as needed. All variables (see `.env.example` for the full,
+commented list):
+
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | Django secret key — change for anything beyond local dev |
+| `DEBUG` | `True`/`False` |
+| `ALLOWED_HOSTS` | Comma-separated hostnames |
+| `CSRF_TRUSTED_ORIGINS` | Comma-separated origins, e.g. `https://yourdomain.com` — needed once served through nginx on a real domain |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Postgres credentials |
+| `POSTGRES_HOST` | `localhost` for host-venv dev; `docker compose up` overrides this to `db` automatically for the containerized web service |
+| `POSTGRES_PORT` | Default `5432` |
+| `PRUSA_SLICER_BIN` | PrusaSlicer binary name/path, default `prusa-slicer` on `PATH` |
+| `PRUSA_SLICER_PROFILE` | Path to an exported PrusaSlicer config bundle (`.ini`); blank = bare CLI defaults |
+| `PRUSA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300` |
+
+### 3. Start Postgres
+
+```bash
+docker compose up -d db
+```
+
+### 4. Migrate and create a superuser
+
+```bash
+python manage.py migrate
+python manage.py createsuperuser
+```
+
+### 5. Run the dev server
+
+```bash
+python manage.py runserver
+```
+
+Visit `http://127.0.0.1:8000/`. Sign up a Student account at `/signup/`, and
+log into `/admin/` with the superuser you just created.
+
+### Running the full stack in Docker (production-style)
+
+**Currently broken** — see the PrusaSlicer note below and `CLAUDE.md`; the
+`web` image fails to build until that's fixed. `docker compose up -d db`
+(step 3 above) is unaffected.
+
+Instead of steps 3–5, build and run everything — Postgres, gunicorn, and
+nginx in front:
+
+```bash
+docker compose up -d --build
+```
+
+This serves the site on `http://localhost/` (port 80, via nginx). See
+`docker-compose.yml` for the three services (`db`, `web`, `nginx`) and
+`nginx/nginx.conf` for the reverse-proxy config, which includes a
+commented-out HTTPS block ready for Let's Encrypt certs. This is the
+deployment shape intended for the Raspberry Pi — build natively on the Pi
+(`docker compose build`) rather than cross-compiling, since `python:3.13-slim`
+publishes official arm64 images.
+
+### Printer controller setup
+
+The printer controller (an Arduino UNO R4 WiFi, not part of this repo) needs
+credentials to talk to the API:
+
+1. In `/admin/`, create a dedicated user for it (e.g. `printer-service`, no
+   staff permissions needed).
+2. In the admin's **Tokens** section, create a token for that user.
+3. Give the controller that key; it authenticates with
+   `Authorization: Token <key>` on every request.
+
+Full endpoint documentation, example Arduino C firmware, and hardware/library
+notes are in `PRINTER_CONTROLLER_API.md`.
+
+### PrusaSlicer
+
+Slicing (`jobs/slicing.py`) shells out to the PrusaSlicer CLI. It
+needs to actually be installed and runnable headless (no display) on
+whatever host runs Django. The `Dockerfile` has a best-effort install step
+for this, but it's **unverified on real Raspberry Pi hardware** — confirm
+`prusa-slicer --export-gcode --output out.gcode in.stl` works on the actual
+device before relying on it. See `CLAUDE.md` for details on this caveat.
+
+No print profile is configured yet (`PRUSA_SLICER_PROFILE` is blank), so
+slicing currently runs with PrusaSlicer's bare defaults. Export a config
+bundle from PrusaSlicer and point `PRUSA_SLICER_PROFILE` at it once you have
+real printer/nozzle/filament settings to use.
+
+## Helper commands
+
+Standard Django management commands, run from the project root with the
+virtualenv active:
+
+```bash
+python manage.py runserver              # dev server
+python manage.py migrate                # apply migrations
+python manage.py makemigrations         # generate migrations after model changes
+python manage.py createsuperuser        # create an admin login
+python manage.py collectstatic          # gather static files (needed in prod, entrypoint.sh does this automatically)
+python manage.py check                  # system checks, catches config errors
+python manage.py shell                  # interactive Python shell with models loaded
+```
+
+Docker Compose:
+
+```bash
+docker compose up -d db          # just Postgres, for local host-venv dev
+docker compose up -d --build     # full stack: db + web (gunicorn) + nginx
+docker compose logs -f web       # tail the Django/gunicorn container's logs
+docker compose exec web python manage.py <command>   # run a management command inside the container
+docker compose down              # stop everything (data persists in named volumes)
+```
+
+Useful one-offs via `manage.py shell -c "..."`:
+
+```bash
+# Create a printer-service token user
+python manage.py shell -c "
+from django.contrib.auth.models import User
+from rest_framework.authtoken.models import Token
+u, _ = User.objects.get_or_create(username='printer-service')
+t, _ = Token.objects.get_or_create(user=u)
+print(t.key)
+"
+```
+
+## Program layout
+
+Three Django apps, split by feature, plus one project-level shared template:
+
+```
+JohnCad/
+├── cms/                     # Django project (settings, root urls, wsgi/asgi)
+│   └── settings.py          # all configuration, env-driven (see .env.example)
+├── templates/base.html      # shared layout every app's templates extend
+├── accounts/                 # Student identity
+│   ├── forms.py               # SignUpForm
+│   ├── views.py                 # CmsLoginView, signup
+│   ├── urls.py                   # login/, logout/, signup/
+│   ├── admin.py                    # re-registers User in the admin
+│   └── templates/accounts/          # login.html, signup.html
+├── attachments/               # raw .stl upload & ownership
+│   ├── models.py                # Attachment
+│   ├── admin.py                   # AttachmentAdmin
+│   ├── forms.py                     # AttachmentForm
+│   ├── views.py                       # home/upload, delete, download
+│   ├── urls.py                          # '', attachments/<id>/{delete,download}/
+│   ├── migrations/                        # schema history
+│   └── templates/attachments/              # attachment_list.html
+├── jobs/                       # the print pipeline
+│   ├── models.py                 # Job (FK -> attachments.Attachment)
+│   ├── admin.py                    # JobAdmin + approve/reject actions
+│   ├── slicing.py                    # PrusaSlicer CLI integration
+│   ├── views.py                        # attachment_export, queue
+│   ├── urls.py                           # attachments/<id>/export/, queue/
+│   ├── api_views.py, api_urls.py           # printer controller endpoints, mounted at /api/
+│   ├── migrations/                           # schema history
+│   └── templates/jobs/                         # queue.html
+├── static/css/site.css        # the site's one stylesheet
+├── nginx/nginx.conf            # reverse-proxy config for the Docker stack
+├── Dockerfile                   # web image: Python + PrusaSlicer + gunicorn
+├── docker-compose.yml             # db + web + nginx services
+├── entrypoint.sh                    # container startup: migrate, collectstatic, then exec gunicorn
+├── requirements.txt                  # Python dependencies
+├── .env.example                       # documented list of all env vars
+├── CLAUDE.md                           # architecture notes, current status, open items
+└── PRINTER_CONTROLLER_API.md            # printer controller API contract
+```
+
+Dependency direction is one-way: `jobs` imports from `attachments` (the `Job.attachment`
+FK, and `attachment_export`'s need for the `Attachment` model) — never the
+reverse, aside from `attachments`'s home view doing one read-only `Job`
+query to populate the "My Jobs" table on a Student's dashboard.
+
+## Models
+
+`Attachment` lives in `attachments/models.py`; `Job` lives in `jobs/models.py`.
+
+### `Attachment`
+
+The raw file a Student uploads.
+
+| Field | Notes |
+|---|---|
+| `user` | FK to `User`, `related_name='attachments'` |
+| `name` | Display name given at upload time |
+| `file` | The `.stl` itself — `FileExtensionValidator` restricts to `.stl`. Stored under `MEDIA_ROOT` (`private_media/`), never mounted at a public URL — only reachable via the owner-only `attachment_download` view |
+| `uploaded_at` | Auto-set on creation |
+
+One Attachment can have many `Job`s (a Student can export/request-print the
+same file more than once).
+
+### `Job`
+
+One specific request to print an `Attachment`. This is the thing that
+actually moves through the approval → slicing → printing pipeline.
+
+| Field | Notes |
+|---|---|
+| `user` | FK to `User`, `related_name='jobs'` — who requested this print |
+| `attachment` | FK to `Attachment`, `related_name='jobs'` — what's being printed |
+| `status` | One of `pending`/`approved`/`queued`/`working`/`finished`/`rejected` — see status table below |
+| `gcode` | Sliced output, populated by `slicing.slice_to_gcode()` once a job is approved and slicing succeeds. Blank until then. |
+| `created_at` | Set when the Student clicks Export |
+| `approved_at` | Set when an admin approves; drives FIFO ordering of the queue |
+| `working_at` | Set by the printer controller API when it starts exporting to a microSD card |
+| `finished_at` | Set by the printer controller API when the microSD card is returned |
+
+#### Job status lifecycle
+
+| Status | Set by | Meaning |
+|---|---|---|
+| `pending` | Student (Export click) | Awaiting admin review |
+| `approved` | Admin | Signed off; slicing is attempted immediately as part of the same admin action |
+| `queued` | System, automatically | Slicing succeeded, G-code ready, sitting in the active print queue (FIFO by `approved_at`) |
+| `working` | Printer controller, via API | G-code has been exported to a microSD card |
+| `finished` | Printer controller, via API | The microSD card came back after printing |
+| `rejected` | Admin | Declined instead of approved — terminal |
+
+If slicing fails or the slicer isn't configured, the job stays parked in
+`approved` rather than silently disappearing — the admin sees a warning
+(`SlicerNotConfigured`, e.g. binary missing) or error
+(`SlicingFailed`, with PrusaSlicer's captured stderr) explaining why.
+
+## Features
+
+### Accounts
+
+Standard Django session auth. `/signup/` (`SignUpForm`, wraps
+`UserCreationForm`) auto-logs a new Student in; `/login/` and `/logout/`
+(POST-only, per Django 5+) round it out. No email verification or password
+reset flow currently.
+
+### Attachment upload & management (`/`)
+
+A Student's home page: upload form (name + `.stl` file), a table of their
+own attachments with download/export/delete actions, and a "My Jobs" table
+showing every job they've ever requested and its current status. All scoped
+to `request.user` — Students never see each other's attachments here.
+
+### Export → Job creation
+
+Clicking **Export** on an attachment (`attachment_export` view, in
+`jobs/views.py` — it creates a `Job`, so it lives with `jobs` even though
+its URL is still `attachments/<id>/export/`) creates a new `Job` in
+`pending` status. A Student can export the same attachment multiple times,
+producing multiple independent jobs.
+
+### Admin review (`/admin/`)
+
+Django admin, with `Job` (registered in `jobs/admin.py`, changelist at
+`/admin/jobs/job/`) alongside the default `User` (`accounts/admin.py`) and
+`Attachment` (`attachments/admin.py`) admin. Two custom bulk actions on the
+Job changelist:
+
+- **Approve selected jobs** — moves `pending → approved`, stamps
+  `approved_at`, and immediately attempts slicing. On success the job
+  auto-advances to `queued`; on failure it's left in `approved` with a
+  message explaining why (see status table above).
+- **Reject selected jobs** — moves `pending → rejected`.
+
+### Slicing (`jobs/slicing.py`)
+
+`slice_to_gcode(job)` invokes PrusaSlicer as a subprocess
+(`prusa-slicer --export-gcode --output <tmp> [--load <profile>] <stl>`),
+captures the output G-code into `job.gcode`, and advances the job to
+`queued`. No shell interpolation (`shell=True`) is used. Configurable via
+`PRUSA_SLICER_BIN` / `PRUSA_SLICER_PROFILE` / `PRUSA_SLICER_TIMEOUT`.
+
+### Public print queue (`/queue/`)
+
+Any logged-in Student (not just admins) can see what's currently `queued` or
+`working` — attachment name, uploader's username, and status. Read-only;
+there's no way for a Student to reorder or cancel jobs from here.
+
+### Printer controller API (`/api/...`)
+
+Token-authenticated (DRF `TokenAuthentication`), built for an Arduino UNO R4
+WiFi at the printers to poll and pull jobs — see `PRINTER_CONTROLLER_API.md`
+for the full contract with examples. In short:
+
+- `GET /api/jobs/queue/` — what's ready to print, FIFO
+- `GET /api/jobs/<id>/gcode/` — download a job's sliced G-code
+- `POST /api/jobs/<id>/working/` — mark a job as being written to a microSD card
+- `POST /api/jobs/<id>/finished/` — mark a job finished once the card returns
+
+Invalid state transitions (e.g. `finished` before `working`) return `409`
+rather than silently succeeding.
+
+### Deployment
+
+Dockerized for a Raspberry Pi: `Dockerfile` (Python + PrusaSlicer + gunicorn,
+running as a non-root user), `docker-compose.yml` (Postgres + the Django app
++ nginx reverse proxy), `entrypoint.sh` (runs migrations and `collectstatic`
+before starting gunicorn). Static files are served via WhiteNoise from
+within the Django process — no separate static file server needed.
+
+**Currently broken**: the `Dockerfile`'s PrusaSlicer install step fails the
+build outright (bad/guessed release URL) — `docker compose up -d --build`
+does not work right now. `docker compose up -d db` (Postgres-only, for
+host-venv dev) is unaffected. See `CLAUDE.md` for details and status.
