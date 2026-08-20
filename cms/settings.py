@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'attachments',
+    'jobs',
 ]
 
 MIDDLEWARE = [
@@ -170,6 +171,16 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # never mounted at a directly-reachable URL (see cms/urls.py).
 MEDIA_URL = '/private_media/'
 MEDIA_ROOT = BASE_DIR / 'private_media'
+
+
+# PrusaSlicer CLI (attachments/slicing.py)
+
+# Binary name/path -- expects it on PATH by default, however it's installed.
+PRUSA_SLICER_BIN = os.environ.get('PRUSA_SLICER_BIN', 'prusa-slicer')
+# Path to an exported PrusaSlicer config bundle/profile (.ini). Blank means
+# slice with PrusaSlicer's bare CLI defaults -- fill in once you export one.
+PRUSA_SLICER_PROFILE = os.environ.get('PRUSA_SLICER_PROFILE', '')
+PRUSA_SLICER_TIMEOUT = int(os.environ.get('PRUSA_SLICER_TIMEOUT', '300'))
 
 
 # Django REST Framework

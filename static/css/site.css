@@ -190,6 +190,41 @@ td a:hover { text-decoration: underline; }
 
 .auth-card { max-width: 380px; margin: 3rem auto 0; }
 
+.messages {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.5rem;
+}
+
+.message {
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  background: rgba(108, 92, 231, 0.12);
+  color: var(--primary-dark);
+}
+
+.message-error { background: rgba(255, 92, 114, 0.15); color: var(--danger-dark); }
+.message-warning { background: rgba(255, 193, 7, 0.18); color: #8a6d00; }
+.message-success { background: rgba(0, 206, 201, 0.15); color: #007b78; }
+
+.row-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  background: rgba(108, 92, 231, 0.12);
+  color: var(--primary-dark);
+}
+
 .auth-footer { text-align: center; margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
 .auth-footer a { color: var(--primary-dark); font-weight: 600; text-decoration: none; }
 

@@ -1,28 +1,13 @@
-from django.contrib.auth import login
+import os
+
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.views import LoginView
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
-from .forms import AttachmentForm, SignUpForm
+from jobs.models import Job
+
+from .forms import AttachmentForm
 from .models import Attachment
-
-
-class CmsLoginView(LoginView):
-    template_name = 'attachments/login.html'
-
-
-def signup(request):
-    if request.user.is_authenticated:
-        return redirect('attachment-list')
-    if request.method == 'POST':
-        form = SignUpForm(request.POST)
-        if form.is_valid():
-            user = form.save()
-            login(request, user)
-            return redirect('attachment-list')
-    else:
-        form = SignUpForm()
-    return render(request, 'attachments/signup.html', {'form': form})
 
 
 @login_required
@@ -39,6 +24,7 @@ def attachment_upload(request):
     return render(request, 'attachments/attachment_list.html', {
         'form': form,
         'attachments': Attachment.objects.filter(user=request.user),
+        'jobs': Job.objects.filter(user=request.user).select_related('attachment'),
     })
 
 
@@ -49,3 +35,13 @@ def attachment_delete(request, pk):
         attachment.file.delete(save=False)
         attachment.delete()
     return redirect('attachment-list')
+
+
+@login_required
+def attachment_download(request, pk):
+    attachment = get_object_or_404(Attachment, pk=pk, user=request.user)
+    return FileResponse(
+        attachment.file.open('rb'),
+        as_attachment=True,
+        filename=os.path.basename(attachment.file.name),
+    )

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Print Queue{% endblock %}
+{% block content %}
+<h1>Print Queue</h1>
+<p class="subtitle">Jobs currently queued or being printed.</p>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Attachment</th><th>Student</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.attachment.name }}</td>
+                <td>{{ job.user.username }}</td>
+                <td><span class="status-badge">{{ job.get_status_display }}</span></td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="3">Nothing in the queue right now.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

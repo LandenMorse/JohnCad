@@ -1,4 +1,4 @@
-{% extends "attachments/base.html" %}
+{% extends "base.html" %}
 {% block title %}My Attachments{% endblock %}
 {% block content %}
 <h1>My Attachments</h1>
@@ -21,9 +21,13 @@
             {% for attachment in attachments %}
             <tr>
                 <td>{{ attachment.name }}</td>
-                <td><a href="{% url 'api-attachment-download' attachment.pk %}">{{ attachment.file.name }}</a></td>
+                <td><a href="{% url 'attachment-download' attachment.pk %}">{{ attachment.file.name }}</a></td>
                 <td>{{ attachment.uploaded_at }}</td>
-                <td>
+                <td class="row-actions">
+                    <form method="post" action="{% url 'attachment-export' attachment.pk %}">
+                        {% csrf_token %}
+                        <button type="submit">Export</button>
+                    </form>
                     <form method="post" action="{% url 'attachment-delete' attachment.pk %}">
                         {% csrf_token %}
                         <button type="submit" class="btn-danger">Delete</button>
@@ -32,6 +36,26 @@
             </tr>
             {% empty %}
             <tr class="empty-row"><td colspan="4">No attachments yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<h2>My Jobs</h2>
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Attachment</th><th>Status</th><th>Requested</th></tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.attachment.name }}</td>
+                <td><span class="status-badge">{{ job.get_status_display }}</span></td>
+                <td>{{ job.created_at }}</td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="3">No jobs requested yet.</td></tr>
             {% endfor %}
         </tbody>
     </table>

@@ -1,0 +1,43 @@
+from django.conf import settings
+from django.db import models
+
+
+def job_gcode_upload_path(instance, filename):
+    return f'jobs/user_{instance.user_id}/{filename}'
+
+
+class Job(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        APPROVED = 'approved', 'Approved'
+        QUEUED = 'queued', 'Queued'
+        WORKING = 'working', 'Working'
+        FINISHED = 'finished', 'Finished'
+        REJECTED = 'rejected', 'Rejected'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='jobs',
+    )
+    attachment = models.ForeignKey(
+        'attachments.Attachment',
+        on_delete=models.CASCADE,
+        related_name='jobs',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    gcode = models.FileField(upload_to=job_gcode_upload_path, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    working_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Job #{self.id} ({self.attachment.name}, {self.user.username})'

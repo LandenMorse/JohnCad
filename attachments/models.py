@@ -19,8 +19,6 @@ class Attachment(models.Model):
         validators=[FileExtensionValidator(allowed_extensions=['stl'])],
     )
     uploaded_at = models.DateTimeField(auto_now_add=True)
-    ready_to_print = models.BooleanField(default=False)
-    fetched_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-uploaded_at']
