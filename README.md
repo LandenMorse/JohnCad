@@ -57,7 +57,7 @@ commented list):
 | `SECRET_KEY` | Django secret key — change for anything beyond local dev |
 | `DEBUG` | `True`/`False` |
 | `ALLOWED_HOSTS` | Comma-separated hostnames |
-| `CSRF_TRUSTED_ORIGINS` | Comma-separated origins, e.g. `https://yourdomain.com` — needed once served through nginx on a real domain |
+| `CSRF_TRUSTED_ORIGINS` | Comma-separated origins, e.g. `https://rhsprint.crabdance.com` — needed once served through nginx on a real domain |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Postgres credentials |
 | `POSTGRES_HOST` | `localhost` for host-venv dev; `docker compose up` overrides this to `db` automatically for the containerized web service |
 | `POSTGRES_PORT` | Default `5432` |
@@ -86,8 +86,8 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Visit `http://127.0.0.1:8000/`. Sign up a Student account at `/signup/`, and
-log into `/admin/` with the superuser you just created.
+Visit `http://127.0.0.1:8000/`. Log into `/admin/` with the superuser you just
+created and add Student accounts under **Users** (there's no public signup).
 
 ### Running the full stack in Docker (dev/experimental — no slicing)
 
@@ -143,8 +143,9 @@ pip install -r requirements.txt
 ```
 SECRET_KEY=<long random string: python -c "import secrets; print(secrets.token_urlsafe(50))">
 DEBUG=False
-ALLOWED_HOSTS=<pi-hostname>,<pi-ip>,localhost
-CSRF_TRUSTED_ORIGINS=http://<pi-hostname>:8000,http://<pi-ip>:8000
+ALLOWED_HOSTS=rhsprint.crabdance.com,<pi-ip>,localhost
+CSRF_TRUSTED_ORIGINS=https://rhsprint.crabdance.com
+HTTPS_ENABLED=False
 POSTGRES_PASSWORD=<strong password>
 POSTGRES_HOST=localhost
 ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
@@ -195,7 +196,7 @@ After=network.target docker.service
 User=<user>
 WorkingDirectory=/home/<user>/JohnCad
 EnvironmentFile=/home/<user>/JohnCad/.env
-ExecStart=/home/<user>/JohnCad/.venv/bin/gunicorn cms.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
+ExecStart=/home/<user>/JohnCad/.venv/bin/gunicorn cms.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 900
 Restart=on-failure
 
 [Install]
@@ -208,12 +209,42 @@ sudo systemctl enable --now johncad
 sudo systemctl status johncad
 ```
 
-The site is then at `http://<pi-ip>:8000/` (static files are served by
-WhiteNoise). The compose `db` service has `restart: unless-stopped`, so
-Postgres comes back after reboots. The compose `web`/`nginx` services are not
-used in this setup (the `web` container can't reach the host's Flatpak).
+Gunicorn listens on localhost only; nginx (next step) is the public entry
+point. Static files are served by WhiteNoise. The compose `db` service has `restart: unless-stopped`, so
+Postgres comes back after reboots. The compose `web`/`nginx` services and `nginx/nginx.conf` are not
+used in this setup (the `web` container can't reach the host's Flatpak);
+nginx runs on the host using `nginx/johncad.host.conf`.
 
-**8. Finish up:** log into `/admin/`, then set up the printer controller's
+**8. nginx + HTTPS.** Requires a real domain name pointing at the Pi (A/AAAA
+record) with ports 80 and 443 forwarded to it from your router. The printer
+controller uses `WiFiSSLClient` against `https://rhsprint.crabdance.com/api`, so a
+publicly trusted certificate (Let's Encrypt) is the intended setup — a
+self-signed cert would not be trusted by the Arduino.
+
+```bash
+sudo apt install -y nginx certbot
+sudo mkdir -p /var/www/certbot
+sudo cp nginx/johncad.host.conf /etc/nginx/sites-available/johncad
+sudo ln -s /etc/nginx/sites-available/johncad /etc/nginx/sites-enabled/johncad
+sudo rm -f /etc/nginx/sites-enabled/default
+```
+
+nginx won't load the config until the cert exists, so first comment out the
+whole `listen 443` server block in `/etc/nginx/sites-available/johncad`, then:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot certonly --webroot -w /var/www/certbot -d rhsprint.crabdance.com
+```
+
+Un-comment the 443 block, then `sudo nginx -t && sudo systemctl reload nginx`.
+Certbot installs a renewal timer; add a reload hook so nginx picks up renewed
+certs: `echo 'systemctl reload nginx' | sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh && sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh`.
+Finally change `HTTPS_ENABLED=False` to `True` in `.env` (no inline comments in `.env` — systemd doesn't strip them) and `sudo systemctl restart johncad`.
+The site is at `https://rhsprint.crabdance.com/`. Uploads up to 512MB are allowed
+(`client_max_body_size` in the nginx config).
+
+**9. Finish up:** log into `/admin/`, then set up the printer controller's
 API token (next section). After pulling updates later:
 
 ```bash
@@ -227,8 +258,9 @@ sudo systemctl restart johncad
 The printer controller (an Arduino UNO R4 WiFi, not part of this repo) needs
 credentials to talk to the API:
 
-1. In `/admin/`, create a dedicated user for it (e.g. `printer-service`, no
-   staff permissions neweded).
+1. In `/admin/`, create a dedicated user for it (e.g. `printer-service`) and
+   tick **Staff status** — the API rejects non-staff users. Don't give it
+   any other permissions.
 2. In the admin's **Tokens** section, create a token for that user.
 3. Give the controller that key; it authenticates with
    `Authorization: Token <key>` on every request.
@@ -286,7 +318,7 @@ Useful one-offs via `manage.py shell -c "..."`:
 python manage.py shell -c "
 from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
-u, _ = User.objects.get_or_create(username='printer-service')
+u, _ = User.objects.get_or_create(username='printer-service', defaults={'is_staff': True})
 t, _ = Token.objects.get_or_create(user=u)
 print(t.key)
 "
@@ -302,11 +334,10 @@ JohnCad/
 │   └── settings.py          # all configuration, env-driven (see .env.example)
 ├── templates/base.html      # shared layout every app's templates extend
 ├── accounts/                 # Student identity
-│   ├── forms.py               # SignUpForm
-│   ├── views.py                 # CmsLoginView, signup
-│   ├── urls.py                   # login/, logout/, signup/
+│   ├── views.py                 # CmsLoginView
+│   ├── urls.py                   # login/, logout/
 │   ├── admin.py                    # re-registers User in the admin
-│   └── templates/accounts/          # login.html, signup.html
+│   └── templates/accounts/          # login.html
 ├── attachments/               # raw .stl upload & ownership
 │   ├── models.py                # Attachment
 │   ├── admin.py                   # AttachmentAdmin
@@ -394,10 +425,9 @@ If slicing fails or the slicer isn't configured, the job stays parked in
 
 ### Accounts
 
-Standard Django session auth. `/signup/` (`SignUpForm`, wraps
-`UserCreationForm`) auto-logs a new Student in; `/login/` and `/logout/`
-(POST-only, per Django 5+) round it out. No email verification or password
-reset flow currently.
+Standard Django session auth: `/login/` and `/logout/` (POST-only, per
+Django 5+). There is **no public signup** — an admin creates Student accounts
+in `/admin/` → Users. No password reset flow currently.
 
 ### Attachment upload & management (`/`)
 

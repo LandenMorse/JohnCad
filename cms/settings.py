@@ -35,7 +35,7 @@ DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
-# CSRF_TRUSTED_ORIGINS, e.g. "https://yourdomain.com" (comma-separated for
+# CSRF_TRUSTED_ORIGINS, e.g. "https://rhsprint.crabdance.com" (comma-separated for
 # multiple). Required once the site is reached through the nginx proxy on a
 # real domain, for POSTs like login/upload/admin to pass Django's CSRF check.
 _csrf_trusted_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
@@ -45,6 +45,12 @@ CSRF_TRUSTED_ORIGINS = [o for o in _csrf_trusted_origins.split(',') if o]
 # request arrived over HTTPS even though gunicorn itself only speaks HTTP.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
+
+# Set HTTPS_ENABLED=True once the site is served over HTTPS (nginx + certs):
+# marks session/CSRF cookies Secure so they're never sent over plain HTTP.
+if os.environ.get('HTTPS_ENABLED', 'False') == 'True':
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 # Large .stl uploads shouldn't be rejected by Django's default 2.5MB cap;
 # keep in sync with nginx's client_max_body_size.
@@ -196,12 +202,14 @@ ORCA_SLICER_TIMEOUT = int(os.environ.get('ORCA_SLICER_TIMEOUT', '300'))
 REST_FRAMEWORK = {
     # Token first: a token-authenticated request never triggers DRF's
     # session-auth CSRF check, which matters for the printer-Pi's POST calls.
+    # The API is for the printer controller only: token auth (no browser
+    # sessions) and the token's user must be staff, so regular Students can't
+    # reach it. Students see the queue through the /queue/ page instead.
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
+        'rest_framework.permissions.IsAdminUser',
     ],
 }
 

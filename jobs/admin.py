@@ -7,13 +7,16 @@ from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_gcode
 
 @admin.action(description='Approve selected jobs')
 def approve_jobs(modeladmin, request, queryset):
-    pending = queryset.filter(status=Job.Status.PENDING)
+    # "approved" jobs are included so ones parked by a failed/unconfigured
+    # slice can be retried by re-running this action.
+    pending = queryset.filter(status__in=[Job.Status.PENDING, Job.Status.APPROVED])
     queued_count = 0
     not_configured_count = 0
     for job in pending:
-        job.status = Job.Status.APPROVED
-        job.approved_at = timezone.now()
-        job.save(update_fields=['status', 'approved_at'])
+        if job.status == Job.Status.PENDING:
+            job.status = Job.Status.APPROVED
+            job.approved_at = timezone.now()
+            job.save(update_fields=['status', 'approved_at'])
         try:
             slice_to_gcode(job)
             queued_count += 1

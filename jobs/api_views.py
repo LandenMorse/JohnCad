@@ -29,8 +29,10 @@ def queue(request):
 @api_view(['GET'])
 def download_gcode(request, pk):
     job = get_object_or_404(Job, pk=pk)
-    if job.user_id != request.user.id and job.status not in (Job.Status.QUEUED, Job.Status.WORKING):
-        return Response(status=403)
+    if job.status not in (Job.Status.QUEUED, Job.Status.WORKING):
+        return Response({'error': f'Job is "{job.status}", G-code only served while queued/working.'}, status=403)
+    if not job.gcode:
+        return Response({'error': 'Job has no G-code.'}, status=404)
     return FileResponse(
         job.gcode.open('rb'),
         as_attachment=True,

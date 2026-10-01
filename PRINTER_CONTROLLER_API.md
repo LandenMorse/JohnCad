@@ -48,7 +48,7 @@ anything beyond a toy file.
 All endpoints below are relative to the JohnCad server's public domain, e.g.:
 
 ```
-https://yourdomain.com/api/
+https://rhsprint.crabdance.com/api/
 ```
 
 (Replace with the real domain once it's set up. Local dev uses plain HTTP —
@@ -68,7 +68,9 @@ specifically for the controller — it is **not** a real person's login. To get
 a token:
 
 1. In the JohnCad admin panel (`/admin/`), create a user for the controller
-   (no need for staff/superuser permissions).
+   and tick **Staff status** (required — the API rejects non-staff users;
+   no superuser or other permissions needed). Browser sessions don't work on
+   the API, only the token.
 2. Go to the **Tokens** section of the admin and create a token for that user.
 3. Copy the key and store it in the sketch (or a `secrets.h` you keep out of
    version control, same idea as Arduino's own `R4WiFi_secrets.h` pattern for
@@ -100,7 +102,7 @@ Lists jobs that are sliced and waiting — "what's ready to print right now,"
 in FIFO order (oldest-approved first). Call this on your polling interval.
 
 ```
-curl -H "Authorization: Token <key>" https://yourdomain.com/api/jobs/queue/
+curl -H "Authorization: Token <key>" https://rhsprint.crabdance.com/api/jobs/queue/
 ```
 
 Response — a JSON array, empty if there's nothing queued:
@@ -111,7 +113,7 @@ Response — a JSON array, empty if there's nothing queued:
     "id": 7,
     "attachment_name": "Bracket v2",
     "username": "alice",
-    "gcode_download_url": "https://yourdomain.com/api/jobs/7/gcode/"
+    "gcode_download_url": "https://rhsprint.crabdance.com/api/jobs/7/gcode/"
   }
 ]
 ```
@@ -124,7 +126,7 @@ Streams the job's sliced G-code file as an attachment download.
 
 ```
 curl -H "Authorization: Token <key>" -o job7.gcode \
-     https://yourdomain.com/api/jobs/7/gcode/
+     https://rhsprint.crabdance.com/api/jobs/7/gcode/
 ```
 
 - `200` — response body is the G-code file.
@@ -139,7 +141,7 @@ microSD card. Only valid when the job is currently `queued`.
 
 ```
 curl -X POST -H "Authorization: Token <key>" \
-     https://yourdomain.com/api/jobs/7/working/
+     https://rhsprint.crabdance.com/api/jobs/7/working/
 ```
 
 - `200` — `{"status": "ok"}`, job is now `working`.
@@ -154,7 +156,7 @@ currently `working`.
 
 ```
 curl -X POST -H "Authorization: Token <key>" \
-     https://yourdomain.com/api/jobs/7/finished/
+     https://rhsprint.crabdance.com/api/jobs/7/finished/
 ```
 
 - `200` — `{"status": "ok"}`, job is now `finished`.
@@ -179,7 +181,7 @@ R4HttpClient http;
 const char* WIFI_SSID = SECRET_SSID;
 const char* WIFI_PASS = SECRET_PASS;
 
-const char* BASE_URL = "https://yourdomain.com/api";
+const char* BASE_URL = "https://rhsprint.crabdance.com/api";
 const char* API_TOKEN = "your-token-here";
 const unsigned long POLL_INTERVAL_MS = 30000;
 

@@ -29,7 +29,8 @@ API contract.
   Student's `Attachment`. Status lifecycle: `pending -> approved -> queued ->
   working -> finished`, plus `rejected` (terminal, from `pending`). See table
   below for who/what sets each status.
-- Session-based signup/login/logout (`accounts` app). Attachment list page
+- Session-based login/logout (`accounts` app); no public signup — admins
+  create Student accounts in `/admin/`. Attachment list page
   (`attachments` app, `/`) lets a Student upload, download their own files,
   and click **Export** to create a `Job` (view lives in `jobs/views.py` since
   it creates a `Job`, even though its URL is `attachments/<id>/export/`); the
