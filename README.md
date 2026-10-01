@@ -1,7 +1,7 @@
 # JohnCad
 
 A Django app for a small 3D-printing pipeline: Students upload `.stl` files,
-request prints, an admin reviews and approves them, PrusaSlicer converts the
+request prints, an admin reviews and approves them, OrcaSlicer converts the
 approved files to G-code, and an Arduino UNO R4 WiFi controller at the
 printers pulls finished jobs down to feed to the printers via microSD card.
 
@@ -16,6 +16,7 @@ See `CLAUDE.md` for the current implementation status and open items, and
 ## Contents
 
 - [Setup](#setup)
+- [Raspberry Pi deployment](#raspberry-pi-deployment-production)
 - [Helper commands](#helper-commands)
 - [Program layout](#program-layout)
 - [Models](#models)
@@ -28,8 +29,8 @@ See `CLAUDE.md` for the current implementation status and open items, and
 - Python 3.13
 - Docker + Docker Compose (for Postgres locally, and for the full
   containerized stack)
-- (Production only) [PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/)
-  CLI on `PATH`
+- (Production only) OrcaSlicer, installed as a Flatpak
+  (`com.orcaslicer.OrcaSlicer`), on the host running Django
 
 ### 1. Clone and create a virtualenv
 
@@ -60,9 +61,11 @@ commented list):
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Postgres credentials |
 | `POSTGRES_HOST` | `localhost` for host-venv dev; `docker compose up` overrides this to `db` automatically for the containerized web service |
 | `POSTGRES_PORT` | Default `5432` |
-| `PRUSA_SLICER_BIN` | PrusaSlicer binary name/path, default `prusa-slicer` on `PATH` |
-| `PRUSA_SLICER_PROFILE` | Path to an exported PrusaSlicer config bundle (`.ini`); blank = bare CLI defaults |
-| `PRUSA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300` |
+| `ORCA_SLICER_CMD` | Command to launch OrcaSlicer, default `flatpak run com.orcaslicer.OrcaSlicer` |
+| `ORCA_SLICER_SETTINGS` | Semicolon-separated machine + process preset `.json` files (`--load-settings`); required — blank = slicer not configured |
+| `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `.json` file(s) (`--load-filaments`), optional |
+| `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir` |
+| `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300` |
 
 ### 3. Start Postgres
 
@@ -86,11 +89,11 @@ python manage.py runserver
 Visit `http://127.0.0.1:8000/`. Sign up a Student account at `/signup/`, and
 log into `/admin/` with the superuser you just created.
 
-### Running the full stack in Docker (production-style)
+### Running the full stack in Docker (dev/experimental — no slicing)
 
-**Currently broken** — see the PrusaSlicer note below and `CLAUDE.md`; the
-`web` image fails to build until that's fixed. `docker compose up -d db`
-(step 3 above) is unaffected.
+**Note:** the `web` container can't reach the host's OrcaSlicer Flatpak, so
+approving jobs from inside it won't slice (jobs park in `approved`). For
+real use on the Pi, follow [Raspberry Pi deployment](#raspberry-pi-deployment-production).
 
 Instead of steps 3–5, build and run everything — Postgres, gunicorn, and
 nginx in front:
@@ -107,13 +110,125 @@ deployment shape intended for the Raspberry Pi — build natively on the Pi
 (`docker compose build`) rather than cross-compiling, since `python:3.13-slim`
 publishes official arm64 images.
 
+### Raspberry Pi deployment (production)
+
+Production shape: **Django (gunicorn) runs directly on the Pi** so it can call
+the OrcaSlicer Flatpak; **Postgres runs in Docker**. Everything below is run
+on the Pi after cloning.
+
+**1. Install prerequisites** (Raspberry Pi OS 64-bit recommended):
+
+```bash
+sudo apt update
+sudo apt install -y git flatpak python3-venv docker.io docker-compose-plugin
+sudo usermod -aG docker $USER      # log out/in afterwards
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install flathub com.orcaslicer.OrcaSlicer   # skip if already installed
+```
+
+Python 3.13 is required. If `python3 --version` is older, install 3.13
+(e.g. via `pyenv` or a deadsnakes-style build) and use it for the venv.
+
+**2. Clone and install:**
+
+```bash
+git clone <repo-url> JohnCad && cd JohnCad
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+**3. Configure `.env`** (`cp .env.example .env`, then edit):
+
+```
+SECRET_KEY=<long random string: python -c "import secrets; print(secrets.token_urlsafe(50))">
+DEBUG=False
+ALLOWED_HOSTS=<pi-hostname>,<pi-ip>,localhost
+CSRF_TRUSTED_ORIGINS=http://<pi-hostname>:8000,http://<pi-ip>:8000
+POSTGRES_PASSWORD=<strong password>
+POSTGRES_HOST=localhost
+ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
+ORCA_SLICER_FILAMENTS=/home/<user>/orca/filament.json
+```
+
+Use the absolute paths of the Bambu machine/process/filament preset `.json`
+files already on the Pi. Set `POSTGRES_PASSWORD` **before** the first
+`docker compose up` — Postgres only reads it when it initializes its volume.
+
+**4. Start Postgres, migrate, create the admin login:**
+
+```bash
+docker compose up -d db
+python manage.py migrate
+python manage.py collectstatic --noinput
+python manage.py createsuperuser
+```
+
+**5. Let the Flatpak sandbox see your files** (same Linux user that runs
+Django):
+
+```bash
+flatpak override --user --filesystem=$PWD/private_media com.orcaslicer.OrcaSlicer
+flatpak override --user --filesystem=/home/<user>/orca:ro com.orcaslicer.OrcaSlicer
+```
+
+**6. Smoke-test slicing before relying on it:**
+
+```bash
+mkdir -p private_media/slicing_tmp
+flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir $PWD/private_media/slicing_tmp   --load-settings "/home/<user>/orca/machine.json;/home/<user>/orca/process.json" some_model.stl
+```
+
+It should write a `.gcode` file. If it fails for lack of a display, try
+`ORCA_SLICER_CMD=xvfb-run -a flatpak run com.orcaslicer.OrcaSlicer` in `.env`
+(`sudo apt install xvfb`). This path is untested on real hardware.
+
+**7. Run Django as a service.** Create `/etc/systemd/system/johncad.service`
+(replace `<user>` and the path):
+
+```ini
+[Unit]
+Description=JohnCad (gunicorn)
+After=network.target docker.service
+
+[Service]
+User=<user>
+WorkingDirectory=/home/<user>/JohnCad
+EnvironmentFile=/home/<user>/JohnCad/.env
+ExecStart=/home/<user>/JohnCad/.venv/bin/gunicorn cms.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now johncad
+sudo systemctl status johncad
+```
+
+The site is then at `http://<pi-ip>:8000/` (static files are served by
+WhiteNoise). The compose `db` service has `restart: unless-stopped`, so
+Postgres comes back after reboots. The compose `web`/`nginx` services are not
+used in this setup (the `web` container can't reach the host's Flatpak).
+
+**8. Finish up:** log into `/admin/`, then set up the printer controller's
+API token (next section). After pulling updates later:
+
+```bash
+git pull && source .venv/bin/activate && pip install -r requirements.txt
+python manage.py migrate && python manage.py collectstatic --noinput
+sudo systemctl restart johncad
+```
+
 ### Printer controller setup
 
 The printer controller (an Arduino UNO R4 WiFi, not part of this repo) needs
 credentials to talk to the API:
 
 1. In `/admin/`, create a dedicated user for it (e.g. `printer-service`, no
-   staff permissions needed).
+   staff permissions neweded).
 2. In the admin's **Tokens** section, create a token for that user.
 3. Give the controller that key; it authenticates with
    `Authorization: Token <key>` on every request.
@@ -121,19 +236,23 @@ credentials to talk to the API:
 Full endpoint documentation, example Arduino C firmware, and hardware/library
 notes are in `PRINTER_CONTROLLER_API.md`.
 
-### PrusaSlicer
+### OrcaSlicer
 
-Slicing (`jobs/slicing.py`) shells out to the PrusaSlicer CLI. It
-needs to actually be installed and runnable headless (no display) on
-whatever host runs Django. The `Dockerfile` has a best-effort install step
-for this, but it's **unverified on real Raspberry Pi hardware** — confirm
-`prusa-slicer --export-gcode --output out.gcode in.stl` works on the actual
-device before relying on it. See `CLAUDE.md` for details on this caveat.
+Slicing (`jobs/slicing.py`) shells out to the OrcaSlicer CLI, installed as a
+Flatpak on the Pi and run on the host alongside Django (not in Docker). Point
+`ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` at the installed Bambu
+machine/process/filament preset `.json` files.
 
-No print profile is configured yet (`PRUSA_SLICER_PROFILE` is blank), so
-slicing currently runs with PrusaSlicer's bare defaults. Export a config
-bundle from PrusaSlicer and point `PRUSA_SLICER_PROFILE` at it once you have
-real printer/nozzle/filament settings to use.
+The Flatpak sandbox must be able to read the STL and preset files and write
+its output. Scratch output goes under `MEDIA_ROOT/slicing_tmp`, so grant:
+
+```bash
+flatpak override --user --filesystem=/path/to/JohnCad/private_media com.orcaslicer.OrcaSlicer
+flatpak override --user --filesystem=/path/to/preset/dir:ro com.orcaslicer.OrcaSlicer
+```
+
+Smoke-test headless on the Pi before relying on it:
+`flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir /out --load-settings "machine.json;process.json" in.stl`.
 
 ## Helper commands
 
@@ -199,7 +318,7 @@ JohnCad/
 ├── jobs/                       # the print pipeline
 │   ├── models.py                 # Job (FK -> attachments.Attachment)
 │   ├── admin.py                    # JobAdmin + approve/reject actions
-│   ├── slicing.py                    # PrusaSlicer CLI integration
+│   ├── slicing.py                    # OrcaSlicer CLI integration
 │   ├── views.py                        # attachment_export, queue
 │   ├── urls.py                           # attachments/<id>/export/, queue/
 │   ├── api_views.py, api_urls.py           # printer controller endpoints, mounted at /api/
@@ -207,7 +326,7 @@ JohnCad/
 │   └── templates/jobs/                         # queue.html
 ├── static/css/site.css        # the site's one stylesheet
 ├── nginx/nginx.conf            # reverse-proxy config for the Docker stack
-├── Dockerfile                   # web image: Python + PrusaSlicer + gunicorn
+├── Dockerfile                   # web image: Python + gunicorn
 ├── docker-compose.yml             # db + web + nginx services
 ├── entrypoint.sh                    # container startup: migrate, collectstatic, then exec gunicorn
 ├── requirements.txt                  # Python dependencies
@@ -269,7 +388,7 @@ actually moves through the approval → slicing → printing pipeline.
 If slicing fails or the slicer isn't configured, the job stays parked in
 `approved` rather than silently disappearing — the admin sees a warning
 (`SlicerNotConfigured`, e.g. binary missing) or error
-(`SlicingFailed`, with PrusaSlicer's captured stderr) explaining why.
+(`SlicingFailed`, with OrcaSlicer's captured stderr) explaining why.
 
 ## Features
 
@@ -310,11 +429,12 @@ Job changelist:
 
 ### Slicing (`jobs/slicing.py`)
 
-`slice_to_gcode(job)` invokes PrusaSlicer as a subprocess
-(`prusa-slicer --export-gcode --output <tmp> [--load <profile>] <stl>`),
-captures the output G-code into `job.gcode`, and advances the job to
-`queued`. No shell interpolation (`shell=True`) is used. Configurable via
-`PRUSA_SLICER_BIN` / `PRUSA_SLICER_PROFILE` / `PRUSA_SLICER_TIMEOUT`.
+`slice_to_gcode(job)` invokes OrcaSlicer as a subprocess
+(`<ORCA_SLICER_CMD> --slice 0 --outputdir <tmp> --load-settings <settings>
+[--load-filaments <filaments>] [--datadir <dir>] <stl>`), picks up the
+generated `.gcode` from the output dir into `job.gcode`, and advances the job
+to `queued`. No shell interpolation (`shell=True`) is used. Configurable via
+the `ORCA_SLICER_*` env vars above.
 
 ### Public print queue (`/queue/`)
 
@@ -338,13 +458,12 @@ rather than silently succeeding.
 
 ### Deployment
 
-Dockerized for a Raspberry Pi: `Dockerfile` (Python + PrusaSlicer + gunicorn,
+Dockerized for a Raspberry Pi: `Dockerfile` (Python + gunicorn,
 running as a non-root user), `docker-compose.yml` (Postgres + the Django app
 + nginx reverse proxy), `entrypoint.sh` (runs migrations and `collectstatic`
 before starting gunicorn). Static files are served via WhiteNoise from
 within the Django process — no separate static file server needed.
 
-**Currently broken**: the `Dockerfile`'s PrusaSlicer install step fails the
-build outright (bad/guessed release URL) — `docker compose up -d --build`
-does not work right now. `docker compose up -d db` (Postgres-only, for
-host-venv dev) is unaffected. See `CLAUDE.md` for details and status.
+The `web` image no longer bundles a slicer; slicing runs against the host's
+OrcaSlicer Flatpak (see the OrcaSlicer section), so run Django on the host
+for production slicing.

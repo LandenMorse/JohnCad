@@ -174,14 +174,20 @@ MEDIA_URL = '/private_media/'
 MEDIA_ROOT = BASE_DIR / 'private_media'
 
 
-# PrusaSlicer CLI (attachments/slicing.py)
+# OrcaSlicer CLI (jobs/slicing.py)
 
-# Binary name/path -- expects it on PATH by default, however it's installed.
-PRUSA_SLICER_BIN = os.environ.get('PRUSA_SLICER_BIN', 'prusa-slicer')
-# Path to an exported PrusaSlicer config bundle/profile (.ini). Blank means
-# slice with PrusaSlicer's bare CLI defaults -- fill in once you export one.
-PRUSA_SLICER_PROFILE = os.environ.get('PRUSA_SLICER_PROFILE', '')
-PRUSA_SLICER_TIMEOUT = int(os.environ.get('PRUSA_SLICER_TIMEOUT', '300'))
+# Command used to launch OrcaSlicer, split shell-style (never run via a shell).
+# The Pi runs it as a Flatpak; that sandbox must be allowed to read MEDIA_ROOT
+# and the settings files (see README "OrcaSlicer").
+ORCA_SLICER_CMD = os.environ.get('ORCA_SLICER_CMD', 'flatpak run com.orcaslicer.OrcaSlicer')
+# Semicolon-separated machine + process preset .json files (--load-settings).
+# Blank means slicing is treated as not configured.
+ORCA_SLICER_SETTINGS = os.environ.get('ORCA_SLICER_SETTINGS', '')
+# Semicolon-separated filament preset .json file(s) (--load-filaments). Optional.
+ORCA_SLICER_FILAMENTS = os.environ.get('ORCA_SLICER_FILAMENTS', '')
+# Optional OrcaSlicer --datadir (profile/settings directory).
+ORCA_SLICER_DATADIR = os.environ.get('ORCA_SLICER_DATADIR', '')
+ORCA_SLICER_TIMEOUT = int(os.environ.get('ORCA_SLICER_TIMEOUT', '300'))
 
 
 # Django REST Framework

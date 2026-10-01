@@ -42,23 +42,20 @@ API contract.
   `attachments/admin.py`; the `User` re-registration lives in
   `accounts/admin.py`.
 - **Slicing** (`jobs/slicing.py`): `slice_to_gcode(job)` shells out to
-  the PrusaSlicer CLI (`subprocess.run`, no `shell=True`) to convert the
-  attachment's `.stl` into `job.gcode`. Configurable via settings/env:
-  `PRUSA_SLICER_BIN` (default `prusa-slicer` on `PATH`), `PRUSA_SLICER_PROFILE`
-  (optional `.ini` config bundle, currently unset — no profile exported yet),
-  `PRUSA_SLICER_TIMEOUT` (default 300s). Raises `SlicerNotConfigured` if the
-  binary isn't found, `SlicingFailed` (with captured stderr) on a non-zero
-  exit/timeout — both are caught and surfaced by the admin approve action
-  rather than crashing it.
-  - **Unverified on real hardware, and currently broken even in local Docker
-    builds**: the `Dockerfile`'s PrusaSlicer install step (downloads a GitHub
-    release AppImage, picked by `TARGETARCH`) fails outright (`curl` exit 22
-    — the release URL is wrong/guessed and 404s). This predates the app
-    split and hasn't been fixed yet. PrusaSlicer's official Linux builds are
-    primarily x86_64; the exact arm64 release asset/URL and whether
-    `--export-gcode` runs headless (no display) on actual Raspberry Pi
-    hardware are both still unverified. Needs real investigation before the
-    Docker deployment path is usable.
+  the OrcaSlicer CLI (`subprocess.run`, no `shell=True`) to convert the
+  attachment's `.stl` into `job.gcode`. OrcaSlicer is a **Flatpak on the Pi**
+  (`ORCA_SLICER_CMD`, default `flatpak run com.orcaslicer.OrcaSlicer`) and must
+  run on the host, not in the `web` container. Config via settings/env:
+  `ORCA_SLICER_SETTINGS` (machine+process preset JSONs, `;`-separated,
+  required), `ORCA_SLICER_FILAMENTS`, `ORCA_SLICER_DATADIR`,
+  `ORCA_SLICER_TIMEOUT` (300s). Scratch output goes in
+  `MEDIA_ROOT/slicing_tmp` (not `/tmp`) because the Flatpak sandbox has a
+  private `/tmp`; the sandbox needs `flatpak override --filesystem=` for
+  `MEDIA_ROOT` and the preset dir. Raises `SlicerNotConfigured` if settings are
+  blank or the command isn't found, `SlicingFailed` (with captured
+  stderr) on non-zero exit/timeout/no `.gcode` output — both caught and
+  surfaced by the admin approve action. **Unverified on the Pi** (flags taken
+  from `--help`, not yet run end-to-end).
 - Public **`/queue/`** page (`jobs` app; any logged-in Student, not just
   admins) lists `queued`/`working` jobs — attachment name, username, status.
 - DRF token-authenticated printer controller API (`jobs/api_urls.py`,
@@ -85,16 +82,13 @@ API contract.
 
 ## Still open / not implemented
 
-- **Fix the Docker PrusaSlicer install step** — currently fails the build
-  outright (bad/guessed release URL), so `docker compose up -d --build`
-  doesn't work at all right now. This is the most pressing item; everything
-  else in the Docker deployment path is blocked behind it.
-- **PrusaSlicer profile**: no `.ini` config bundle exported yet, so slicing
-  currently runs with bare CLI defaults (wrong nozzle/filament/print settings
-  most likely). Export one from PrusaSlicer and set `PRUSA_SLICER_PROFILE`.
-- **Verify PrusaSlicer actually runs on the Pi** (arch + headless) once the
-  install step above is fixed — still unverified on real hardware even after
-  the build itself succeeds.
+- **Verify OrcaSlicer end-to-end on the Pi**: confirm the CLI invocation
+  works headless via Flatpak, the Flatpak filesystem overrides are in place,
+  and the preset paths in `ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` are
+  right (output is Bambu-flavored G-code; confirm it suits the microSD flow).
+- **Docker deployment**: `web` container can't slice (no Flatpak access); for
+  production run Django on the host with Postgres (and optionally nginx) in
+  Docker, and adjust `docker-compose.yml`/nginx upstream accordingly.
 - Whether `working`/`finished` API calls need any request body (e.g. an SD
   card identifier) or stay bare state transitions — not needed yet, revisit
   if the controller firmware ends up wanting to correlate cards to jobs

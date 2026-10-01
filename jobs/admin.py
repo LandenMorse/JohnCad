@@ -32,7 +32,7 @@ def approve_jobs(modeladmin, request, queryset):
         modeladmin.message_user(
             request,
             f'{not_configured_count} job(s) approved but left parked in "approved" -- '
-            'the slicer is not configured (binary not found).',
+            'the slicer is not configured (missing command or ORCA_SLICER_SETTINGS).',
             level=messages.WARNING,
         )
 
