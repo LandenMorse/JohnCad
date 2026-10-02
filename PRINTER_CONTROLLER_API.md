@@ -48,7 +48,7 @@ anything beyond a toy file.
 All endpoints below are relative to the JohnCad server's public domain, e.g.:
 
 ```
-https://rhsprint.crabdance.com/api/
+https://riponhighprint.com/api
 ```
 
 (Replace with the real domain once it's set up. Local dev uses plain HTTP —
@@ -102,7 +102,7 @@ Lists jobs that are sliced and waiting — "what's ready to print right now,"
 in FIFO order (oldest-approved first). Call this on your polling interval.
 
 ```
-curl -H "Authorization: Token <key>" https://rhsprint.crabdance.com/api/jobs/queue/
+curl -H "Authorization: Token 6f599a366326c43440ef876d6fa0bd669b2688ee" https://riponhighprint.com/apijobs/queue/
 ```
 
 Response — a JSON array, empty if there's nothing queued:
@@ -113,7 +113,7 @@ Response — a JSON array, empty if there's nothing queued:
     "id": 7,
     "attachment_name": "Bracket v2",
     "username": "alice",
-    "gcode_download_url": "https://rhsprint.crabdance.com/api/jobs/7/gcode/"
+    "gcode_download_url": "https://riponhighprint.com/apijobs/7/gcode/"
   }
 ]
 ```
@@ -125,8 +125,8 @@ Use `gcode_download_url` directly rather than constructing URLs yourself.
 Streams the job's sliced G-code file as an attachment download.
 
 ```
-curl -H "Authorization: Token <key>" -o job7.gcode \
-     https://rhsprint.crabdance.com/api/jobs/7/gcode/
+curl -H "Authorization: Token 6f599a366326c43440ef876d6fa0bd669b2688ee" -o job7.gcode \
+     https://riponhighprint.com/apijobs/7/gcode/
 ```
 
 - `200` — response body is the G-code file.
@@ -140,8 +140,8 @@ Call this once you've started writing the job's G-code to a detected
 microSD card. Only valid when the job is currently `queued`.
 
 ```
-curl -X POST -H "Authorization: Token <key>" \
-     https://rhsprint.crabdance.com/api/jobs/7/working/
+curl -X POST -H "Authorization: Token 6f599a366326c43440ef876d6fa0bd669b2688ee" \
+     https://riponhighprint.com/apijobs/7/working/
 ```
 
 - `200` — `{"status": "ok"}`, job is now `working`.
@@ -155,8 +155,8 @@ controller after being used at the printer. Only valid when the job is
 currently `working`.
 
 ```
-curl -X POST -H "Authorization: Token <key>" \
-     https://rhsprint.crabdance.com/api/jobs/7/finished/
+curl -X POST -H "Authorization: Token 6f599a366326c43440ef876d6fa0bd669b2688ee" \
+     https://riponhighprint.com/apijobs/7/finished/
 ```
 
 - `200` — `{"status": "ok"}`, job is now `finished`.
@@ -181,8 +181,8 @@ R4HttpClient http;
 const char* WIFI_SSID = SECRET_SSID;
 const char* WIFI_PASS = SECRET_PASS;
 
-const char* BASE_URL = "https://rhsprint.crabdance.com/api";
-const char* API_TOKEN = "your-token-here";
+const char* BASE_URL = "https://riponhighschoolprint.com/api";
+const char* API_TOKEN = "6f599a366326c43440ef876d6fa0bd669b2688ee";
 const unsigned long POLL_INTERVAL_MS = 30000;
 
 void connectWiFi() {
