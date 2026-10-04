@@ -35,11 +35,17 @@ API contract.
   and click **Export** to create a `Job` (view lives in `jobs/views.py` since
   it creates a `Job`, even though its URL is `attachments/<id>/export/`); the
   same page also shows the Student's own job history/status.
+- Teachers (`is_staff`) approve/reject jobs at `/review/` (`jobs/views.py`,
+  logic in `jobs/services.py`; lists all jobs newest first). Django `/admin/` is
+  superuser-only (`cms/admin.py` `SuperuserAdminSite`).
 - Admin (`jobs/admin.py`) has **Approve selected** / **Reject selected** bulk
-  actions on `Job`, at `/admin/jobs/job/`. Approving sets `approved_at`,
-  attempts slicing (see below), and auto-advances to `queued` on success — or
-  leaves the job parked in `approved` with an admin-visible warning/error if
-  slicing isn't configured or fails. `AttachmentAdmin` lives in
+  actions on `Job`, at `/admin/jobs/job/`. Approving only sets `approved_at`;
+  slicing runs asynchronously in the `slice_worker` management command
+  (`jobs/management/commands/slice_worker.py`, claim/slice logic in
+  `jobs/services.py`; run as the `johncad-slicer` systemd service on the Pi
+  host). On success the job auto-advances to `queued`; on failure it stays in
+  `approved` with `Job.slicing_error` set (shown on `/review/`; Retry clears
+  it). `AttachmentAdmin` lives in
   `attachments/admin.py`; the `User` re-registration lives in
   `accounts/admin.py`.
 - **Slicing** (`jobs/slicing.py`): `slice_to_gcode(job)` shells out to

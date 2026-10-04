@@ -29,6 +29,8 @@ body {
   padding: 0 1.25rem 3rem;
 }
 
+.page.wide { max-width: 960px; }
+
 nav.topbar {
   display: flex;
   align-items: center;
@@ -151,6 +153,9 @@ button, .btn {
 button:hover, .btn:hover { background: var(--primary-dark); }
 
 button.btn-danger { background: var(--danger); padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+button.btn-success { background: #00a8a4; padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+button.btn-success:hover { background: #008c89; }
+
 button.btn-danger:hover { background: var(--danger-dark); }
 
 table { width: 100%; border-collapse: collapse; }
@@ -224,6 +229,12 @@ td a:hover { text-decoration: underline; }
   background: rgba(108, 92, 231, 0.12);
   color: var(--primary-dark);
 }
+
+.status-pending, .status-approved { background: rgba(255, 193, 7, 0.2); color: #8a6d00; }
+.status-finished { background: rgba(0, 206, 201, 0.15); color: #007b78; }
+.status-rejected { background: rgba(255, 92, 114, 0.15); color: var(--danger-dark); }
+
+.error-detail { color: var(--danger-dark); font-size: 0.8rem; font-weight: 400; margin-top: 0.2rem; max-width: 28rem; word-break: break-word; }
 
 .auth-footer { text-align: center; margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
 .auth-footer a { color: var(--primary-dark); font-weight: 600; text-decoration: none; }

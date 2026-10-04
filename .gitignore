@@ -7,3 +7,4 @@ private_media/
 staticfiles/
 db.sqlite3
 .idea/
+logs/

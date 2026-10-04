@@ -5,17 +5,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}JohnCad{% endblock %}</title>
+    {% block head %}{% endblock %}
     <link rel="stylesheet" href="{% static 'css/site.css' %}">
 </head>
 <body>
-<div class="page">
+<div class="page{% block page_class %}{% endblock %}">
     <nav class="topbar">
         <a class="brand" href="{% url 'attachment-list' %}">JohnCad</a>
         <div class="nav-links">
             {% if user.is_authenticated %}
                 <span class="username">{{ user.username }}</span>
                 <a href="{% url 'queue' %}">Queue</a>
-                {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+                {% if user.is_staff %}<a href="{% url 'job-review' %}">Review</a>{% endif %}
+                {% if user.is_superuser %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
                 <form class="logout-form" method="post" action="{% url 'logout' %}">
                     {% csrf_token %}
                     <button type="submit" class="link-btn">Log out</button>

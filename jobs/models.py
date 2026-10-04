@@ -31,6 +31,11 @@ class Job(models.Model):
         default=Status.PENDING,
     )
     gcode = models.FileField(upload_to=job_gcode_upload_path, blank=True)
+    # Slicing is done by the `slice_worker` command, not in the web request.
+    # An "approved" job with no G-code is waiting for / being sliced / failed:
+    # see slicing_state.
+    slicing_started_at = models.DateTimeField(null=True, blank=True)
+    slicing_error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     working_at = models.DateTimeField(null=True, blank=True)
@@ -38,6 +43,17 @@ class Job(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+    @property
+    def slicing_state(self):
+        """'waiting' / 'slicing' / 'failed' for an approved job, else ''."""
+        if self.status != self.Status.APPROVED:
+            return ''
+        if self.slicing_error:
+            return 'failed'
+        if self.slicing_started_at:
+            return 'slicing'
+        return 'waiting'
 
     def __str__(self):
         return f'Job #{self.id} ({self.attachment.name}, {self.user.username})'

@@ -60,7 +60,7 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 512 * 1024 * 1024
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
+    'cms.apps.SuperuserAdminConfig',  # django.contrib.admin, superuser-only
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -211,6 +211,44 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAdminUser',
     ],
+}
+
+
+# Logging
+
+# Everything goes to the console (terminal / `docker compose logs` / journald)
+# and to a rotating file at LOG_DIR/johncad.log (default: <project>/logs/).
+LOG_DIR = Path(os.environ.get('LOG_DIR', BASE_DIR / 'logs'))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '{asctime} {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+        'file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOG_DIR / 'johncad.log',
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 5,
+            'formatter': 'standard',
+            'delay': True,
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': LOG_LEVEL,
+    },
 }
 
 

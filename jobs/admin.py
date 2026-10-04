@@ -1,49 +1,25 @@
-from django.contrib import admin, messages
-from django.utils import timezone
+from django.contrib import admin
 
 from .models import Job
-from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_gcode
+from .services import approve_job, reject_job
 
 
 @admin.action(description='Approve selected jobs')
 def approve_jobs(modeladmin, request, queryset):
-    # "approved" jobs are included so ones parked by a failed/unconfigured
-    # slice can be retried by re-running this action.
-    pending = queryset.filter(status__in=[Job.Status.PENDING, Job.Status.APPROVED])
-    queued_count = 0
-    not_configured_count = 0
-    for job in pending:
-        if job.status == Job.Status.PENDING:
-            job.status = Job.Status.APPROVED
-            job.approved_at = timezone.now()
-            job.save(update_fields=['status', 'approved_at'])
-        try:
-            slice_to_gcode(job)
-            queued_count += 1
-        except SlicerNotConfigured:
-            not_configured_count += 1
-        except SlicingFailed as exc:
-            modeladmin.message_user(
-                request,
-                f'Job #{job.id} approved but slicing failed, left parked in '
-                f'"approved": {exc}',
-                level=messages.ERROR,
-            )
-    if queued_count:
-        modeladmin.message_user(request, f'{queued_count} job(s) sliced and queued.')
-    if not_configured_count:
-        modeladmin.message_user(
-            request,
-            f'{not_configured_count} job(s) approved but left parked in "approved" -- '
-            'the slicer is not configured (missing command or ORCA_SLICER_SETTINGS).',
-            level=messages.WARNING,
-        )
+    # "approved" jobs are included so ones whose slice failed can be retried by
+    # re-running this action. Slicing itself is done by the slice_worker command.
+    candidates = queryset.filter(status__in=[Job.Status.PENDING, Job.Status.APPROVED])
+    approved = sum(approve_job(job) for job in candidates)
+    modeladmin.message_user(
+        request,
+        f'{approved} job(s) approved; the slice worker will slice and queue them.',
+    )
 
 
 @admin.action(description='Reject selected jobs')
 def reject_jobs(modeladmin, request, queryset):
-    updated = queryset.filter(status=Job.Status.PENDING).update(status=Job.Status.REJECTED)
-    modeladmin.message_user(request, f'{updated} job(s) rejected.')
+    rejected = sum(reject_job(job) for job in queryset)
+    modeladmin.message_user(request, f'{rejected} job(s) rejected.')
 
 
 @admin.register(Job)
@@ -51,5 +27,8 @@ class JobAdmin(admin.ModelAdmin):
     list_display = ('id', 'attachment', 'user', 'status', 'created_at', 'approved_at')
     list_filter = ('status',)
     search_fields = ('attachment__name', 'user__username')
-    readonly_fields = ('created_at', 'approved_at', 'working_at', 'finished_at')
+    readonly_fields = (
+        'created_at', 'approved_at', 'working_at', 'finished_at',
+        'slicing_started_at', 'slicing_error',
+    )
     actions = [approve_jobs, reject_jobs]

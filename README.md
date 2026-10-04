@@ -88,6 +88,8 @@ python manage.py runserver
 
 Visit `http://127.0.0.1:8000/`. Log into `/admin/` with the superuser you just
 created and add Student accounts under **Users** (there's no public signup).
+Teachers: create a user with **Staff status** ticked (not superuser); they
+approve jobs at `/review/`.
 
 ### Running the full stack in Docker (dev/experimental — no slicing)
 
@@ -208,6 +210,37 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now johncad
 sudo systemctl status johncad
 ```
+
+**Slicing worker.** Approving a job doesn't slice it in the web request; the
+`slice_worker` command does, in the background. It must run on the host (next
+to the OrcaSlicer Flatpak) with the same `.env`. Create
+`/etc/systemd/system/johncad-slicer.service`:
+
+```ini
+[Unit]
+Description=JohnCad slicing worker
+After=network.target docker.service
+
+[Service]
+User=<user>
+WorkingDirectory=/home/<user>/JohnCad
+EnvironmentFile=/home/<user>/JohnCad/.env
+ExecStart=/home/<user>/JohnCad/.venv/bin/python manage.py slice_worker
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now johncad-slicer
+journalctl -u johncad-slicer -f     # watch it slice
+```
+
+Without this service running, approved jobs just sit at "Waiting to slice".
+Jobs approved before the worker existed are picked up automatically. For a
+one-off run without the service: `python manage.py slice_worker --once`.
 
 Gunicorn listens on localhost only; nginx (next step) is the public entry
 point. Static files are served by WhiteNoise. The compose `db` service has `restart: unless-stopped`, so
@@ -401,6 +434,8 @@ actually moves through the approval → slicing → printing pipeline.
 | `status` | One of `pending`/`approved`/`queued`/`working`/`finished`/`rejected` — see status table below |
 | `gcode` | Sliced output, populated by `slicing.slice_to_gcode()` once a job is approved and slicing succeeds. Blank until then. |
 | `created_at` | Set when the Student clicks Export |
+| `slicing_started_at` | Set while the slice worker is slicing the job; blank otherwise |
+| `slicing_error` | Why the last slice failed; blank if none. Cleared on retry |
 | `approved_at` | Set when an admin approves; drives FIFO ordering of the queue |
 | `working_at` | Set by the printer controller API when it starts exporting to a microSD card |
 | `finished_at` | Set by the printer controller API when the microSD card is returned |
@@ -410,16 +445,17 @@ actually moves through the approval → slicing → printing pipeline.
 | Status | Set by | Meaning |
 |---|---|---|
 | `pending` | Student (Export click) | Awaiting admin review |
-| `approved` | Admin | Signed off; slicing is attempted immediately as part of the same admin action |
+| `approved` | Admin / teacher | Signed off; waiting for the `slice_worker` to slice it (shown as Waiting to slice / Slicing… / Slicing failed) |
 | `queued` | System, automatically | Slicing succeeded, G-code ready, sitting in the active print queue (FIFO by `approved_at`) |
 | `working` | Printer controller, via API | G-code has been exported to a microSD card |
 | `finished` | Printer controller, via API | The microSD card came back after printing |
 | `rejected` | Admin | Declined instead of approved — terminal |
 
 If slicing fails or the slicer isn't configured, the job stays parked in
-`approved` rather than silently disappearing — the admin sees a warning
-(`SlicerNotConfigured`, e.g. binary missing) or error
-(`SlicingFailed`, with OrcaSlicer's captured stderr) explaining why.
+`approved` rather than silently disappearing — the reason
+(`SlicerNotConfigured`, e.g. binary missing, or `SlicingFailed` with
+OrcaSlicer's captured stderr) is saved in `Job.slicing_error` and shown on the
+review page, where a teacher can click **Retry**.
 
 ## Features
 
@@ -444,9 +480,21 @@ its URL is still `attachments/<id>/export/`) creates a new `Job` in
 `pending` status. A Student can export the same attachment multiple times,
 producing multiple independent jobs.
 
-### Admin review (`/admin/`)
+### Teacher review page (`/review/`)
 
-Django admin, with `Job` (registered in `jobs/admin.py`, changelist at
+Staff accounts (`is_staff`, e.g. teachers) approve or reject jobs at
+`/review/` (`jobs/views.py`, shared logic in `jobs/services.py`). It lists
+every job — new and past — newest first, with **Approve** / **Reject**
+buttons for `pending` jobs and **Retry** for jobs whose slicing failed. It
+shows Waiting to slice / Slicing… / Slicing failed (with the reason) for
+approved jobs and refreshes itself while any are in progress. Non-staff users
+get a 403.
+
+### Admin (`/admin/`, superusers only)
+
+The Django admin is restricted to superusers (`cms/admin.py`; staff-only
+accounts can't log in). To make a teacher account, tick **Staff status** only.
+It contains `Job` (registered in `jobs/admin.py`, changelist at
 `/admin/jobs/job/`) alongside the default `User` (`accounts/admin.py`) and
 `Attachment` (`attachments/admin.py`) admin. Two custom bulk actions on the
 Job changelist:
@@ -458,6 +506,12 @@ Job changelist:
 - **Reject selected jobs** — moves `pending → rejected`.
 
 ### Slicing (`jobs/slicing.py`)
+
+The `slice_worker` management command (`jobs/management/commands/`, logic in
+`jobs/services.py`) polls for `approved` jobs without G-code, claims the oldest
+one atomically, and calls `slice_to_gcode`. Failures are stored on the job, so
+a failing job isn't retried in a loop until a teacher clicks Retry. Claims left
+by a crashed worker are released after `ORCA_SLICER_TIMEOUT` + 60s.
 
 `slice_to_gcode(job)` invokes OrcaSlicer as a subprocess
 (`<ORCA_SLICER_CMD> --slice 0 --outputdir <tmp> --load-settings <settings>

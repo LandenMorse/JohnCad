@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Review Jobs{% endblock %}
+{% block page_class %} wide{% endblock %}
+{% block head %}{% if auto_refresh %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
+{% block content %}
+<h1>Review Jobs</h1>
+<p class="subtitle">
+    {% if pending_count %}{{ pending_count }} job{{ pending_count|pluralize }} waiting for review.{% else %}No jobs waiting for review.{% endif %}
+    Newest first.
+</p>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Attachment</th><th>Student</th><th>Uploaded</th><th>Requested</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>
+                    {{ job.attachment.name }}
+                    {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error }}</div>{% endif %}
+                </td>
+                <td>{{ job.user.username }}</td>
+                <td>{{ job.attachment.uploaded_at }}</td>
+                <td>{{ job.created_at }}</td>
+                <td>
+                    {% if job.slicing_state == 'waiting' %}<span class="status-badge status-approved">Waiting to slice</span>
+                    {% elif job.slicing_state == 'slicing' %}<span class="status-badge status-approved">Slicing&hellip;</span>
+                    {% elif job.slicing_state == 'failed' %}<span class="status-badge status-rejected">Slicing failed</span>
+                    {% else %}<span class="status-badge status-{{ job.status }}">{{ job.get_status_display }}</span>{% endif %}
+                </td>
+                <td class="row-actions">
+                    {% if job.status == 'pending' or job.slicing_state == 'failed' %}
+                    <form method="post" action="{% url 'job-review-approve' job.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
+                    </form>
+                    {% endif %}
+                    {% if job.status == 'pending' %}
+                    <form method="post" action="{% url 'job-review-reject' job.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-danger">Reject</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="6">No jobs yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
