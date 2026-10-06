@@ -39,7 +39,8 @@ def attachment_delete(request, pk):
 
 @login_required
 def attachment_download(request, pk):
-    attachment = get_object_or_404(Attachment, pk=pk, user=request.user)
+    attachments = Attachment.objects.all() if request.user.is_staff else Attachment.objects.filter(user=request.user)
+    attachment = get_object_or_404(attachments, pk=pk)
     return FileResponse(
         attachment.file.open('rb'),
         as_attachment=True,
