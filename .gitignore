@@ -8,3 +8,4 @@ staticfiles/
 db.sqlite3
 .idea/
 logs/
+.claude/settings.local.json

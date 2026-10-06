@@ -52,20 +52,20 @@ cp .env.example .env
 Then edit `.env` as needed. All variables (see `.env.example` for the full,
 commented list):
 
-| Variable | Purpose |
-|---|---|
-| `SECRET_KEY` | Django secret key — change for anything beyond local dev |
-| `DEBUG` | `True`/`False` |
-| `ALLOWED_HOSTS` | Comma-separated hostnames |
-| `CSRF_TRUSTED_ORIGINS` | Comma-separated origins, e.g. `https://rhsprint.crabdance.com` — needed once served through nginx on a real domain |
-| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Postgres credentials |
+| Variable | Purpose                                                                                                                   |
+|---|---------------------------------------------------------------------------------------------------------------------------|
+| `SECRET_KEY` | Django secret key — change for anything beyond local dev                                                                  |
+| `DEBUG` | `True`/`False`                                                                                                            |
+| `ALLOWED_HOSTS` | Comma-separated hostnames                                                                                                 |
+| `CSRF_TRUSTED_ORIGINS` | Comma-separated origins, e.g. `https://rhsprint.crabdance.com` — needed once served through nginx on a real domain        |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Postgres credentials                                                                                                      |
 | `POSTGRES_HOST` | `localhost` for host-venv dev; `docker compose up` overrides this to `db` automatically for the containerized web service |
-| `POSTGRES_PORT` | Default `5432` |
-| `ORCA_SLICER_CMD` | Command to launch OrcaSlicer, default `flatpak run com.orcaslicer.OrcaSlicer` |
-| `ORCA_SLICER_SETTINGS` | Semicolon-separated machine + process preset `.json` files (`--load-settings`); required — blank = slicer not configured |
-| `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `.json` file(s) (`--load-filaments`), optional |
-| `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir` |
-| `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300` |
+| `POSTGRES_PORT` | Default `5432`                                                                                                            |
+| `ORCA_SLICER_CMD` | Command to launch OrcaSlicer, default `flatpak run com.orcaslicer.OrcaSlicer`                                             |
+| `ORCA_SLICER_SETTINGS` | Semicolon-separated machine + process preset `.json` files (`--load-settings`); required — blank = slicer not configured  |
+| `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `jm.json` file(s) (`--load-filaments`), optional                                      |
+| `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir`                                                                                           |
+| `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300`                                                                                 |
 
 ### 3. Start Postgres
 

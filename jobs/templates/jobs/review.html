@@ -4,12 +4,21 @@
 {% block head %}{% if auto_refresh %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
 {% block content %}
 <h1>Review Jobs</h1>
-<p class="subtitle">
-    {% if pending_count %}{{ pending_count }} job{{ pending_count|pluralize }} waiting for review.{% else %}No jobs waiting for review.{% endif %}
-    Newest first.
-</p>
+<p class="subtitle">Newest first.</p>
+
+<div class="stat-grid">
+    <div class="stat-tile">
+        <div class="stat-value{% if pending_count %} accent{% endif %}">{{ pending_count }}</div>
+        <div class="stat-label">Waiting for review</div>
+    </div>
+    <div class="stat-tile">
+        <div class="stat-value">{{ jobs|length }}</div>
+        <div class="stat-label">Total jobs</div>
+    </div>
+</div>
 
 <div class="card">
+    <div class="table-wrap">
     <table>
         <thead>
             <tr><th>Attachment</th><th>Student</th><th>Uploaded</th><th>Requested</th><th>Status</th><th></th></tr>
@@ -19,6 +28,7 @@
             <tr>
                 <td>
                     {{ job.attachment.name }}
+                    <a href="{% url 'attachment-download' job.attachment.pk %}">Download file</a>
                     {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error }}</div>{% endif %}
                 </td>
                 <td>{{ job.user.username }}</td>
@@ -30,19 +40,21 @@
                     {% elif job.slicing_state == 'failed' %}<span class="status-badge status-rejected">Slicing failed</span>
                     {% else %}<span class="status-badge status-{{ job.status }}">{{ job.get_status_display }}</span>{% endif %}
                 </td>
-                <td class="row-actions">
-                    {% if job.status == 'pending' or job.slicing_state == 'failed' %}
-                    <form method="post" action="{% url 'job-review-approve' job.pk %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
-                    </form>
-                    {% endif %}
-                    {% if job.status == 'pending' %}
-                    <form method="post" action="{% url 'job-review-reject' job.pk %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn-danger">Reject</button>
-                    </form>
-                    {% endif %}
+                <td>
+                    <div class="row-actions">
+                        {% if job.status == 'pending' or job.slicing_state == 'failed' %}
+                        <form method="post" action="{% url 'job-review-approve' job.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
+                        </form>
+                        {% endif %}
+                        {% if job.status == 'pending' %}
+                        <form method="post" action="{% url 'job-review-reject' job.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-danger">Reject</button>
+                        </form>
+                        {% endif %}
+                    </div>
                 </td>
             </tr>
             {% empty %}
@@ -50,5 +62,6 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 {% endblock %}

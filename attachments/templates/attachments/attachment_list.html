@@ -13,6 +13,7 @@
 </div>
 
 <div class="card">
+    <div class="table-wrap">
     <table>
         <thead>
             <tr><th>Name</th><th>File</th><th>Uploaded</th><th></th></tr>
@@ -23,15 +24,17 @@
                 <td>{{ attachment.name }}</td>
                 <td><a href="{% url 'attachment-download' attachment.pk %}">{{ attachment.file.name }}</a></td>
                 <td>{{ attachment.uploaded_at }}</td>
-                <td class="row-actions">
-                    <form method="post" action="{% url 'attachment-export' attachment.pk %}">
-                        {% csrf_token %}
-                        <button type="submit">Export</button>
-                    </form>
-                    <form method="post" action="{% url 'attachment-delete' attachment.pk %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn-danger">Delete</button>
-                    </form>
+                <td>
+                    <div class="row-actions">
+                        <form method="post" action="{% url 'attachment-export' attachment.pk %}">
+                            {% csrf_token %}
+                            <button type="submit">Export</button>
+                        </form>
+                        <form method="post" action="{% url 'attachment-delete' attachment.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-danger">Delete</button>
+                        </form>
+                    </div>
                 </td>
             </tr>
             {% empty %}
@@ -39,10 +42,12 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <h2>My Jobs</h2>
 <div class="card">
+    <div class="table-wrap">
     <table>
         <thead>
             <tr><th>Attachment</th><th>Status</th><th>Requested</th></tr>
@@ -59,5 +64,6 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 {% endblock %}
