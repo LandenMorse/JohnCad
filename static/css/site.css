@@ -240,9 +240,22 @@ input[type="file"] {
   color: var(--text);
 }
 
+select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 1.05rem;
+  background: var(--bg);
+  color: var(--text);
+  max-width: 100%;
+}
+
+input[readonly] { color: var(--muted); }
+
 input::placeholder { color: var(--muted-dim); }
 
-input:focus {
+input:focus, select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(217, 143, 163, 0.2);
@@ -379,6 +392,38 @@ td a::before { content: "> "; color: var(--muted-dim); }
   flex-wrap: wrap;
   gap: 0.4rem;
 }
+
+/* A select + button side by side (export class picker, review filter) */
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.inline-form label { margin: 0; }
+
+.filter-bar { margin-bottom: 1.25rem; }
+
+button.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  padding: 0.35rem 0.8rem;
+  font-size: 1rem;
+  box-shadow: var(--shadow-offset) var(--shadow-offset) 0 0 var(--border);
+}
+button.btn-ghost:hover { border-color: var(--accent); color: var(--accent-strong); }
+
+.card-action { margin-top: 1.25rem; }
+
+.cell-sub { color: var(--muted); font-size: 0.95rem; }
+
+.back-link { color: var(--accent-strong); text-decoration: none; }
+.back-link::before { content: "< "; color: var(--muted-dim); }
+.back-link:hover { text-decoration: underline; }
+
+.code-value, .mono-code { letter-spacing: 0.12em; }
 
 /* Status shown as a bracketed terminal tag */
 .status-badge {

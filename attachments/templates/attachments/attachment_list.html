@@ -26,8 +26,14 @@
                 <td>{{ attachment.uploaded_at }}</td>
                 <td>
                     <div class="row-actions">
-                        <form method="post" action="{% url 'attachment-export' attachment.pk %}">
+                        <form method="post" action="{% url 'attachment-export' attachment.pk %}" class="inline-form">
                             {% csrf_token %}
+                            {% if classes|length > 1 %}
+                            <select name="classroom" required aria-label="Class to submit {{ attachment.name }} to">
+                                <option value="">Class&hellip;</option>
+                                {% for classroom in classes %}<option value="{{ classroom.pk }}">{{ classroom.name }}</option>{% endfor %}
+                            </select>
+                            {% endif %}
                             <button type="submit">Export</button>
                         </form>
                         <form method="post" action="{% url 'attachment-delete' attachment.pk %}">
@@ -50,17 +56,18 @@
     <div class="table-wrap">
     <table>
         <thead>
-            <tr><th>Attachment</th><th>Status</th><th>Requested</th></tr>
+            <tr><th>Attachment</th><th>Class</th><th>Status</th><th>Requested</th></tr>
         </thead>
         <tbody>
             {% for job in jobs %}
             <tr>
                 <td>{{ job.attachment.name }}</td>
+                <td>{{ job.classroom.name|default:"—" }}</td>
                 <td><span class="status-badge">{{ job.get_status_display }}</span></td>
                 <td>{{ job.created_at }}</td>
             </tr>
             {% empty %}
-            <tr class="empty-row"><td colspan="3">No jobs requested yet.</td></tr>
+            <tr class="empty-row"><td colspan="4">No jobs requested yet.</td></tr>
             {% endfor %}
         </tbody>
     </table>

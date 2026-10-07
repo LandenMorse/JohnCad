@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Classes{% endblock %}
+{% block content %}
+<h1>Classes</h1>
+
+{% if user.is_staff %}
+<p class="subtitle">{% if user.is_superuser %}All classes.{% else %}Classes you teach.{% endif %}</p>
+
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Class</th><th>Teachers</th><th>Students</th></tr>
+        </thead>
+        <tbody>
+            {% for classroom in taught %}
+            <tr>
+                <td><a href="{% url 'classroom-detail' classroom.pk %}">{{ classroom.name }}</a></td>
+                <td>{% for teacher in classroom.teachers.all %}{{ teacher.username }}{% if not forloop.last %}, {% endif %}{% endfor %}</td>
+                <td>{{ classroom.student_count }}</td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="3">No classes yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<h2>New class</h2>
+<div class="card">
+    <form method="post" action="{% url 'classroom-create' %}">
+        {% csrf_token %}
+        {{ classroom_form.as_p }}
+        <button type="submit">Create class</button>
+    </form>
+</div>
+{% endif %}
+
+{% if not user.is_staff or joined %}
+<h2>My classes</h2>
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Class</th><th>Teachers</th></tr>
+        </thead>
+        <tbody>
+            {% for classroom in joined %}
+            <tr>
+                <td>{{ classroom.name }}</td>
+                <td>{% for teacher in classroom.teachers.all %}{{ teacher.get_full_name|default:teacher.username }}{% if not forloop.last %}, {% endif %}{% endfor %}</td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="2">You're not in a class yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+{% endif %}
+
+{% if not user.is_staff %}
+<h2>Join a class</h2>
+<div class="card">
+    <form method="post" action="{% url 'classroom-join' %}">
+        {% csrf_token %}
+        {{ join_form.as_p }}
+        <button type="submit">Join</button>
+    </form>
+</div>
+{% endif %}
+{% endblock %}

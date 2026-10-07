@@ -16,6 +16,7 @@
             {% if user.is_authenticated %}
                 <span class="username">{{ user.username }}</span>
                 <a href="{% url 'queue' %}">Queue</a>
+                <a href="{% url 'classroom-list' %}">Classes</a>
                 {% if user.is_staff %}<a href="{% url 'job-review' %}">Review</a>{% endif %}
                 {% if user.is_superuser %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
                 <form class="logout-form" method="post" action="{% url 'logout' %}">
@@ -24,6 +25,7 @@
                 </form>
             {% else %}
                 <a href="{% url 'login' %}">Log in</a>
+                <a href="{% url 'signup' %}">Sign up</a>
             {% endif %}
         </div>
     </nav>
