@@ -87,9 +87,10 @@ python manage.py runserver
 ```
 
 Visit `http://127.0.0.1:8000/`. Log into `/admin/` with the superuser you just
-created and add Student accounts under **Users** (there's no public signup).
-Teachers: create a user with **Staff status** ticked (not superuser); they
-approve jobs at `/review/`.
+created. Teachers: create a user with **Staff status** ticked (not
+superuser). A teacher creates a class at `/classes/` and generates a signup
+code; Students sign up at `/signup/` with that code. Teachers approve jobs at
+`/review/`.
 
 ### Running the full stack in Docker (dev/experimental — no slicing)
 
@@ -462,8 +463,29 @@ review page, where a teacher can click **Retry**.
 ### Accounts
 
 Standard Django session auth: `/login/` and `/logout/` (POST-only, per
-Django 5+). There is **no public signup** — an admin creates Student accounts
-in `/admin/` → Users. No password reset flow currently.
+Django 5+). No password reset flow currently.
+
+### Classes & signup codes (`/classes/`, `/signup/`)
+
+Teachers create classes and generate **signup codes** for them. A code is 8
+characters (no look-alike 0/O/1/I/L), works for any number of students, and
+expires 24 hours after it's generated (or when revoked). `/signup/` asks for
+the code, username, first/last name, email and password, creates a regular
+(non-staff) account and puts it in the code's class; the account keeps
+working after the code expires. The class page shows a `/signup/?code=…` link
+that pre-fills the code. Students who already have an account join further
+classes by entering a code on `/classes/`.
+
+A class can have several teachers; any of them can manage the roster
+(remove students), codes and co-teachers, but the last teacher can't be
+removed. Superusers see and manage every class. Classes and codes are also
+editable in `/admin/`.
+
+When a Student exports an attachment they pick which of their classes it's
+for (no picker if they're in exactly one; students in no class submit
+without one). The review page only shows a teacher jobs submitted to their
+classes, plus their own; superusers see everything, including classless
+jobs, and the page has a class filter.
 
 ### Attachment upload & management (`/`)
 

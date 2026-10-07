@@ -3,12 +3,21 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import Job
 from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_gcode
 
 logger = logging.getLogger(__name__)
+
+
+def jobs_visible_to(user):
+    """Jobs `user` may review: all for superusers; otherwise jobs submitted to
+    a class they teach, plus their own."""
+    if user.is_superuser:
+        return Job.objects.all()
+    return Job.objects.filter(Q(classroom__teachers=user) | Q(user=user)).distinct()
 
 
 def approve_job(job):

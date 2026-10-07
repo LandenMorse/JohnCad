@@ -9,6 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 from django.urls import reverse
 
+from accounts.models import Classroom
 from attachments.models import Attachment
 
 from .models import Job
@@ -29,8 +30,12 @@ class ReviewTestBase(TestCase):
             name='part',
             file=SimpleUploadedFile('part.stl', b'solid x'),
         )
+        cls.classroom = Classroom.objects.create(name='Period 1')
+        cls.classroom.teachers.add(cls.teacher)
+        cls.classroom.students.add(cls.student)
 
     def make_job(self, **kwargs):
+        kwargs.setdefault('classroom', self.classroom)
         return Job.objects.create(user=self.student, attachment=self.attachment, **kwargs)
 
 
@@ -145,6 +150,112 @@ class ReviewActionTests(ReviewTestBase):
         response = self.client.get(reverse('job-review'))
         self.assertContains(response, 'Waiting to slice')
         self.assertContains(response, 'http-equiv="refresh"')
+
+
+class ExportClassTests(ReviewTestBase):
+    def export(self, **data):
+        self.client.force_login(self.student)
+        return self.client.post(reverse('attachment-export', args=[self.attachment.pk]), data)
+
+    def test_single_class_is_picked_automatically(self):
+        self.export()
+        self.assertEqual(Job.objects.get().classroom, self.classroom)
+
+    def test_multiple_classes_require_a_choice(self):
+        other = Classroom.objects.create(name='Period 2')
+        other.students.add(self.student)
+        self.export()
+        self.assertFalse(Job.objects.exists())
+        self.export(classroom=other.pk)
+        self.assertEqual(Job.objects.get().classroom, other)
+
+    def test_cannot_submit_to_class_student_is_not_in(self):
+        Classroom.objects.create(name='Period 2').students.add(self.student)
+        stranger = Classroom.objects.create(name='Not mine')
+        self.export(classroom=stranger.pk)
+        self.assertFalse(Job.objects.exists())
+
+    def test_classless_student_exports_without_class(self):
+        self.classroom.students.remove(self.student)
+        self.export()
+        self.assertIsNone(Job.objects.get().classroom)
+
+    def test_picker_only_shown_for_multiple_classes(self):
+        self.client.force_login(self.student)
+        self.assertNotContains(self.client.get(reverse('attachment-list')), 'name="classroom"')
+        Classroom.objects.create(name='Period 2').students.add(self.student)
+        self.assertContains(self.client.get(reverse('attachment-list')), 'name="classroom"')
+
+
+class ReviewScopeTests(ReviewTestBase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.other_teacher = User.objects.create_user('other', password='pw', is_staff=True)
+        cls.other_class = Classroom.objects.create(name='Period 2')
+        cls.other_class.teachers.add(cls.other_teacher)
+
+    def review_jobs(self, user, **params):
+        self.client.force_login(user)
+        return list(self.client.get(reverse('job-review'), params).context['jobs'])
+
+    def test_teacher_sees_only_own_classes(self):
+        mine = self.make_job()
+        theirs = self.make_job(classroom=self.other_class)
+        classless = self.make_job(classroom=None)
+        self.assertEqual(self.review_jobs(self.teacher), [mine])
+        self.assertEqual(self.review_jobs(self.other_teacher), [theirs])
+        self.assertEqual(self.review_jobs(self.root), [classless, theirs, mine])
+
+    def test_teacher_sees_own_job(self):
+        own_attachment = Attachment.objects.create(
+            user=self.other_teacher, name='mine', file=SimpleUploadedFile('m.stl', b'x'),
+        )
+        job = Job.objects.create(user=self.other_teacher, attachment=own_attachment)
+        self.assertEqual(self.review_jobs(self.other_teacher), [job])
+
+    def test_cannot_act_on_other_class_job(self):
+        job = self.make_job()
+        self.client.force_login(self.other_teacher)
+        for name in ('job-review-approve', 'job-review-reject'):
+            self.assertEqual(self.client.post(reverse(name, args=[job.pk])).status_code, 404)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.PENDING)
+
+    def test_class_filter(self):
+        self.other_class.teachers.add(self.teacher)
+        mine = self.make_job()
+        theirs = self.make_job(classroom=self.other_class)
+        self.assertEqual(self.review_jobs(self.teacher, classroom=self.classroom.pk), [mine])
+        self.assertEqual(self.review_jobs(self.teacher, classroom=self.other_class.pk), [theirs])
+        self.assertEqual(self.review_jobs(self.teacher), [theirs, mine])
+
+    def test_filter_ignores_out_of_scope_class(self):
+        mine = self.make_job()
+        self.make_job(classroom=self.other_class)
+        self.assertEqual(self.review_jobs(self.teacher, classroom=self.other_class.pk), [mine])
+        self.assertEqual(self.review_jobs(self.teacher, classroom='none'), [mine])
+
+    def test_superuser_no_class_filter(self):
+        self.make_job()
+        classless = self.make_job(classroom=None)
+        self.assertEqual(self.review_jobs(self.root, classroom='none'), [classless])
+
+    def test_action_keeps_filter(self):
+        job = self.make_job()
+        self.client.force_login(self.teacher)
+        response = self.client.post(
+            reverse('job-review-reject', args=[job.pk]), {'classroom': self.classroom.pk},
+        )
+        self.assertRedirects(response, f"{reverse('job-review')}?classroom={self.classroom.pk}")
+
+    def test_staff_download_scoped(self):
+        self.make_job()
+        url = reverse('attachment-download', args=[self.attachment.pk])
+        self.client.force_login(self.teacher)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.client.force_login(self.other_teacher)
+        self.assertEqual(self.client.get(url).status_code, 404)
 
 
 class SliceWorkerTests(ReviewTestBase):

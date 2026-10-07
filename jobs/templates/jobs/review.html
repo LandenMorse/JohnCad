@@ -6,6 +6,20 @@
 <h1>Review Jobs</h1>
 <p class="subtitle">Newest first.</p>
 
+{% if classes or user.is_superuser %}
+<form method="get" class="inline-form filter-bar">
+    <label for="classroom-filter">Class</label>
+    <select name="classroom" id="classroom-filter">
+        <option value="">All classes</option>
+        {% for classroom in classes %}
+        <option value="{{ classroom.pk }}"{% if selected_classroom == classroom.pk|stringformat:"d" %} selected{% endif %}>{{ classroom.name }}</option>
+        {% endfor %}
+        {% if user.is_superuser %}<option value="none"{% if selected_classroom == "none" %} selected{% endif %}>No class</option>{% endif %}
+    </select>
+    <button type="submit" class="btn-ghost">Filter</button>
+</form>
+{% endif %}
+
 <div class="stat-grid">
     <div class="stat-tile">
         <div class="stat-value{% if pending_count %} accent{% endif %}">{{ pending_count }}</div>
@@ -21,7 +35,7 @@
     <div class="table-wrap">
     <table>
         <thead>
-            <tr><th>Attachment</th><th>Student</th><th>Uploaded</th><th>Requested</th><th>Status</th><th></th></tr>
+            <tr><th>Attachment</th><th>Student</th><th>Class</th><th>Uploaded</th><th>Requested</th><th>Status</th><th></th></tr>
         </thead>
         <tbody>
             {% for job in jobs %}
@@ -31,7 +45,11 @@
                     <a href="{% url 'attachment-download' job.attachment.pk %}">Download file</a>
                     {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error }}</div>{% endif %}
                 </td>
-                <td>{{ job.user.username }}</td>
+                <td>
+                    {{ job.user.username }}
+                    {% if job.user.get_full_name %}<div class="cell-sub">{{ job.user.get_full_name }}</div>{% endif %}
+                </td>
+                <td>{{ job.classroom.name|default:"—" }}</td>
                 <td>{{ job.attachment.uploaded_at }}</td>
                 <td>{{ job.created_at }}</td>
                 <td>
@@ -45,12 +63,14 @@
                         {% if job.status == 'pending' or job.slicing_state == 'failed' %}
                         <form method="post" action="{% url 'job-review-approve' job.pk %}">
                             {% csrf_token %}
+                            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
                             <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
                         </form>
                         {% endif %}
                         {% if job.status == 'pending' %}
                         <form method="post" action="{% url 'job-review-reject' job.pk %}">
                             {% csrf_token %}
+                            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
                             <button type="submit" class="btn-danger">Reject</button>
                         </form>
                         {% endif %}
@@ -58,7 +78,7 @@
                 </td>
             </tr>
             {% empty %}
-            <tr class="empty-row"><td colspan="6">No jobs yet.</td></tr>
+            <tr class="empty-row"><td colspan="7">No jobs yet.</td></tr>
             {% endfor %}
         </tbody>
     </table>

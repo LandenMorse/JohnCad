@@ -15,7 +15,8 @@ API contract.
 - Django 6.1 + Postgres, native `auth.User` (referred to as "Students" in
   product language, even though the underlying model is still
   `django.contrib.auth.User`).
-- Three Django apps, split by feature: `accounts` (Student identity),
+- Three Django apps, split by feature: `accounts` (Student identity, classes,
+  signup codes; depends on no other app),
   `attachments` (raw `.stl` upload), `jobs` (the print pipeline + printer
   controller API). Dependency direction is one-way — `jobs` imports from `attachments`
   (the `Job.attachment` FK, and the `attachment_export` view), never the
@@ -29,14 +30,29 @@ API contract.
   Student's `Attachment`. Status lifecycle: `pending -> approved -> queued ->
   working -> finished`, plus `rejected` (terminal, from `pending`). See table
   below for who/what sets each status.
-- Session-based login/logout (`accounts` app); no public signup — admins
-  create Student accounts in `/admin/`. Attachment list page
+- Session-based login/logout (`accounts` app). **Code-gated signup** at
+  `/signup/`: a teacher creates a `Classroom` ("Class" in the UI) at
+  `/classes/` and generates a `SignupCode` (`accounts/models.py`; 8 chars,
+  multi-use, expires 24h after creation, revocable). Signing up with a valid
+  code creates a non-staff account (username, first/last name, email,
+  password) and adds it to that class; accounts outlive the code. Logged-in
+  students join more classes by entering a code on `/classes/`. A class can
+  have several teachers (any teacher of it manages roster, codes and
+  co-teachers; can't remove the last one); superusers manage all classes.
+  Permission helpers (`staff_required`, `classes_visible_to`) live in
+  `accounts/permissions.py`. Attachment list page
   (`attachments` app, `/`) lets a Student upload, download their own files,
   and click **Export** to create a `Job` (view lives in `jobs/views.py` since
   it creates a `Job`, even though its URL is `attachments/<id>/export/`); the
   same page also shows the Student's own job history/status.
-- Teachers (`is_staff`) approve/reject jobs at `/review/` (`jobs/views.py`,
-  logic in `jobs/services.py`; lists all jobs newest first). Django `/admin/` is
+- Each `Job` has a nullable `classroom` FK: on Export the Student picks one
+  of their classes (auto-picked if they have exactly one; `None` if they have
+  none). Teachers (`is_staff`) approve/reject jobs at `/review/`
+  (`jobs/views.py`, logic in `jobs/services.py`; newest first), scoped by
+  `jobs_visible_to()` to jobs submitted to classes they teach plus their own;
+  superusers see everything, including classless jobs. `?classroom=<id>`
+  (or `none`, superusers) filters the list. Staff attachment downloads are
+  scoped the same way. Django `/admin/` is
   superuser-only (`cms/admin.py` `SuperuserAdminSite`).
 - Admin (`jobs/admin.py`) has **Approve selected** / **Reject selected** bulk
   actions on `Job`, at `/admin/jobs/job/`. Approving only sets `approved_at`;

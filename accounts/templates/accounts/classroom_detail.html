@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ classroom.name }}{% endblock %}
+{% block page_class %} wide{% endblock %}
+{% block content %}
+<h1>{{ classroom.name }}</h1>
+<p class="subtitle"><a class="back-link" href="{% url 'classroom-list' %}">All classes</a></p>
+
+<div class="stat-grid">
+    <div class="stat-tile">
+        {% if active_code %}
+        <div class="stat-value accent code-value">{{ active_code.code }}</div>
+        <div class="stat-label">Signup code &middot; expires {{ active_code.expires_at|date:"M j, g:i a" }}</div>
+        {% else %}
+        <div class="stat-value code-value">--------</div>
+        <div class="stat-label">No active signup code</div>
+        {% endif %}
+    </div>
+    <div class="stat-tile">
+        <div class="stat-value">{{ students|length }}</div>
+        <div class="stat-label">Students</div>
+    </div>
+</div>
+
+<div class="card">
+    {% if share_url %}
+    <label for="share-url">Signup link</label>
+    <input type="text" id="share-url" value="{{ share_url }}" readonly onclick="this.select()">
+    <p class="helptext">Students can also enter the code at sign up, or under Classes if they already have an account.</p>
+    {% endif %}
+    <form method="post" action="{% url 'classroom-code-create' classroom.pk %}" class="card-action">
+        {% csrf_token %}
+        <button type="submit">{% if active_code %}Generate another code{% else %}Generate code{% endif %}</button>
+    </form>
+</div>
+
+<h2>Students</h2>
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Username</th><th>Name</th><th>Email</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for student in students %}
+            <tr>
+                <td>{{ student.username }}</td>
+                <td>{{ student.get_full_name|default:"—" }}</td>
+                <td>{{ student.email|default:"—" }}</td>
+                <td>
+                    <div class="row-actions">
+                        <form method="post" action="{% url 'classroom-student-remove' classroom.pk student.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-danger">Remove</button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="4">No students yet. Share a signup code.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<h2>Codes</h2>
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Code</th><th>Created by</th><th>Expires</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for code in codes %}
+            <tr>
+                <td class="mono-code">{{ code.code }}</td>
+                <td>{{ code.created_by.username|default:"—" }}</td>
+                <td>{{ code.expires_at }}</td>
+                <td>{% if code.is_active %}<span class="status-badge status-finished">Active</span>{% else %}<span class="status-badge">Expired</span>{% endif %}</td>
+                <td>
+                    <div class="row-actions">
+                        {% if code.is_active %}
+                        <form method="post" action="{% url 'classroom-code-revoke' classroom.pk code.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-danger">Revoke</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="5">No codes generated yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<h2>Teachers</h2>
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Username</th><th>Name</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for teacher in teachers %}
+            <tr>
+                <td>{{ teacher.username }}</td>
+                <td>{{ teacher.get_full_name|default:"—" }}</td>
+                <td>
+                    <div class="row-actions">
+                        {% if teachers|length > 1 %}
+                        <form method="post" action="{% url 'classroom-teacher-remove' classroom.pk teacher.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-danger">Remove</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <form method="post" action="{% url 'classroom-teacher-add' classroom.pk %}" class="card-action">
+        {% csrf_token %}
+        {{ teacher_form.as_p }}
+        <button type="submit">Add teacher</button>
+    </form>
+</div>
+{% endblock %}

@@ -25,6 +25,16 @@ class Job(models.Model):
         on_delete=models.CASCADE,
         related_name='jobs',
     )
+    # The class the Student submitted this job to; decides which teachers
+    # review it. Null for students in no class (superusers review those) and
+    # if the class is later deleted -- print history is kept either way.
+    classroom = models.ForeignKey(
+        'accounts.Classroom',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='jobs',
+    )
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
