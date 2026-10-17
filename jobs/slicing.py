@@ -17,13 +17,22 @@ class SlicingFailed(Exception):
     pass
 
 
-def slice_to_gcode(job):
-    """
-    Convert job.attachment's .stl into G-code via the OrcaSlicer CLI and
-    attach the result to job.gcode.
+# Name Orca is told to write; Bambu printers (via Bambuddy) take a sliced
+# .gcode.3mf, not bare G-code.
+OUTPUT_NAME = 'output.gcode.3mf'
 
-    On success, advances job.status to Job.Status.QUEUED and saves -- callers
-    (jobs/admin.py) rely on that contract.
+
+def slice_to_3mf(job):
+    """
+    Slice job.attachment's .stl via the OrcaSlicer CLI into a .gcode.3mf and
+    attach it to job.sliced_file.
+
+    On success, advances job.status to Job.Status.QUEUED and saves -- the
+    slice and dispatch workers rely on that contract.
+
+    UNVERIFIED: `--export-3mf` alongside `--slice 0` is taken from the CLI's
+    --help; confirm on the Pi that the result prints when hand-uploaded to
+    Bambuddy (docs/BAMBUDDY_PLAN.md, build order step 1).
     """
     if not settings.ORCA_SLICER_SETTINGS:
         raise SlicerNotConfigured('ORCA_SLICER_SETTINGS is not set (machine/process presets).')
@@ -42,6 +51,7 @@ def slice_to_gcode(job):
         command = base_command + [
             '--slice', '0',
             '--outputdir', tmp_dir,
+            '--export-3mf', OUTPUT_NAME,
             '--load-settings', settings.ORCA_SLICER_SETTINGS,
         ]
         if settings.ORCA_SLICER_FILAMENTS:
@@ -71,13 +81,16 @@ def slice_to_gcode(job):
                 f'OrcaSlicer exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}'
             )
 
-        # Orca names its output itself (e.g. plate_1.gcode).
-        gcode_files = sorted(Path(tmp_dir).glob('*.gcode'))
-        if not gcode_files:
-            raise SlicingFailed('OrcaSlicer exited successfully but produced no G-code file.')
+        # Prefer the requested name, but accept whatever .3mf Orca wrote.
+        output = Path(tmp_dir) / OUTPUT_NAME
+        if not output.exists():
+            found = sorted(Path(tmp_dir).glob('*.3mf'))
+            if not found:
+                raise SlicingFailed('OrcaSlicer exited successfully but produced no .3mf file.')
+            output = found[0]
 
-        with gcode_files[0].open('rb') as f:
-            job.gcode.save(f'{job.id}.gcode', File(f), save=False)
+        with output.open('rb') as f:
+            job.sliced_file.save(f'{job.id}.gcode.3mf', File(f), save=False)
 
     job.status = Job.Status.QUEUED
-    job.save(update_fields=['gcode', 'status'])
+    job.save(update_fields=['sliced_file', 'status'])

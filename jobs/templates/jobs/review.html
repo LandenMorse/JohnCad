@@ -44,6 +44,7 @@
                     {{ job.attachment.name }}
                     <a href="{% url 'attachment-download' job.attachment.pk %}">Download file</a>
                     {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error }}</div>{% endif %}
+                    {% if job.dispatch_error %}<div class="error-detail">{{ job.dispatch_error }}</div>{% endif %}
                 </td>
                 <td>
                     {{ job.user.username }}
@@ -56,6 +57,9 @@
                     {% if job.slicing_state == 'waiting' %}<span class="status-badge status-approved">Waiting to slice</span>
                     {% elif job.slicing_state == 'slicing' %}<span class="status-badge status-approved">Slicing&hellip;</span>
                     {% elif job.slicing_state == 'failed' %}<span class="status-badge status-rejected">Slicing failed</span>
+                    {% elif job.dispatch_state == 'waiting' or job.dispatch_state == 'dispatching' %}<span class="status-badge status-approved">Sending to printer&hellip;</span>
+                    {% elif job.dispatch_state == 'failed' %}<span class="status-badge status-rejected">Sending failed</span>
+                    {% elif job.dispatch_state == 'staged' %}<span class="status-badge status-queued">Waiting for plate clear</span>
                     {% else %}<span class="status-badge status-{{ job.status }}">{{ job.get_status_display }}</span>{% endif %}
                 </td>
                 <td>
@@ -65,6 +69,13 @@
                             {% csrf_token %}
                             {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
                             <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
+                        </form>
+                        {% endif %}
+                        {% if job.dispatch_state == 'failed' or job.status == 'failed' %}
+                        <form method="post" action="{% url 'job-review-retry-dispatch' job.pk %}">
+                            {% csrf_token %}
+                            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
+                            <button type="submit" class="btn-success">Retry</button>
                         </form>
                         {% endif %}
                         {% if job.status == 'pending' %}

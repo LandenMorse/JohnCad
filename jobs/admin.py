@@ -30,5 +30,7 @@ class JobAdmin(admin.ModelAdmin):
     readonly_fields = (
         'created_at', 'approved_at', 'working_at', 'finished_at',
         'slicing_started_at', 'slicing_error',
+        'bambuddy_file_id', 'bambuddy_queue_id', 'dispatch_started_at',
+        'dispatch_error', 'dispatched_at', 'released_at', 'failed_at',
     )
     actions = [approve_jobs, reject_jobs]

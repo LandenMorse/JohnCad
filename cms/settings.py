@@ -66,8 +66,6 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'rest_framework',
-    'rest_framework.authtoken',
     'accounts',
     'attachments',
     'jobs',
@@ -208,22 +206,22 @@ ORCA_SLICER_DATADIR = os.environ.get('ORCA_SLICER_DATADIR', '')
 ORCA_SLICER_TIMEOUT = int(os.environ.get('ORCA_SLICER_TIMEOUT', '300'))
 
 
-# Django REST Framework
-# https://www.django-rest-framework.org/api-guide/settings/
+# Bambuddy (jobs/bambuddy.py, jobs/dispatch.py)
 
-REST_FRAMEWORK = {
-    # Token first: a token-authenticated request never triggers DRF's
-    # session-auth CSRF check, which matters for the printer-Pi's POST calls.
-    # The API is for the printer controller only: token auth (no browser
-    # sessions) and the token's user must be staff, so regular Students can't
-    # reach it. Students see the queue through the /queue/ page instead.
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAdminUser',
-    ],
-}
+# Base URL of the self-hosted Bambuddy on the Pi, e.g. http://127.0.0.1:8080.
+# Blank means dispatch is treated as not configured.
+BAMBUDDY_URL = os.environ.get('BAMBUDDY_URL', '')
+# API key created in Bambuddy (Settings > API keys) with "Manage Queue",
+# "Manage Library", "Read Status" and "Control Printer" (for release-next).
+BAMBUDDY_API_KEY = os.environ.get('BAMBUDDY_API_KEY', '')
+# Shared secret Bambuddy's webhook must send (header or ?secret=). Blank
+# rejects every webhook.
+BAMBUDDY_WEBHOOK_SECRET = os.environ.get('BAMBUDDY_WEBHOOK_SECRET', '')
+# Bambuddy's id for the printer jobs go to (one printer for now).
+BAMBUDDY_PRINTER_ID = os.environ.get('BAMBUDDY_PRINTER_ID', '')
+# Queue jobs as "Queue Only" so each waits for staff to clear the plate.
+BAMBUDDY_STAGED = os.environ.get('BAMBUDDY_STAGED', 'True') == 'True'
+BAMBUDDY_TIMEOUT = int(os.environ.get('BAMBUDDY_TIMEOUT', '60'))
 
 
 # Logging
