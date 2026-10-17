@@ -1,11 +1,15 @@
+import tempfile
 from datetime import timedelta
+from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.urls import reverse
 
@@ -13,7 +17,9 @@ from accounts.models import Classroom
 from attachments.models import Attachment
 
 from .models import Job
-from .services import claim_next_job, reset_stale_claims, slice_claimed_job
+from rest_framework.test import APIClient
+
+from .services import claim_next_job, finish_job, reset_stale_claims, slice_claimed_job
 from .slicing import SlicerNotConfigured, SlicingFailed
 
 User = get_user_model()
@@ -328,3 +334,104 @@ class SliceWorkerTests(ReviewTestBase):
         self.approved()
         call_command('slice_worker', '--once')
         self.assertEqual(slice_mock.call_count, 2)
+
+
+class AttachmentDeleteTests(ReviewTestBase):
+    def setUp(self):
+        self.client.force_login(self.student)
+
+    def delete(self, attachment):
+        return self.client.post(reverse('attachment-delete', args=[attachment.pk]))
+
+    def test_exported_attachment_cannot_be_deleted(self):
+        self.make_job()
+        self.delete(self.attachment)
+        self.assertTrue(Attachment.objects.filter(pk=self.attachment.pk).exists())
+        self.assertTrue(Path(self.attachment.file.path).exists())
+
+    def test_unexported_attachment_is_deleted(self):
+        extra = Attachment.objects.create(
+            user=self.student, name='extra', file=SimpleUploadedFile('extra.stl', b'solid z'),
+        )
+        path = Path(extra.file.path)
+        self.delete(extra)
+        self.assertFalse(Attachment.objects.filter(pk=extra.pk).exists())
+        self.assertFalse(path.exists())
+
+    def test_deleting_user_still_removes_jobs_and_files(self):
+        self.make_job()
+        self.student.delete()
+        self.assertFalse(Job.objects.exists())
+
+
+class GcodeCleanupTests(ReviewTestBase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        override = override_settings(MEDIA_ROOT=Path(tmp.name))
+        override.enable()
+        self.addCleanup(override.disable)
+        self.api = APIClient()
+        self.api.force_authenticate(self.teacher)
+
+    def job_with_gcode(self, status):
+        job = self.make_job(status=status)
+        job.gcode.save('1.gcode', ContentFile(b'G1 X0'), save=True)
+        return job
+
+    def test_finishing_deletes_gcode_file(self):
+        job = self.job_with_gcode(Job.Status.WORKING)
+        path = Path(job.gcode.path)
+        self.assertTrue(path.exists())
+        response = self.api.post(f'/api/jobs/{job.pk}/finished/')
+        self.assertEqual(response.status_code, 200)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.FINISHED)
+        self.assertIsNotNone(job.finished_at)
+        self.assertFalse(job.gcode)
+        self.assertFalse(path.exists())
+
+    def test_finishing_keeps_stl(self):
+        # Created here, not the class attachment, so it lands in the temp MEDIA_ROOT.
+        stl = Attachment.objects.create(
+            user=self.student, name='mine', file=SimpleUploadedFile('mine.stl', b'solid y'),
+        )
+        job = self.job_with_gcode(Job.Status.WORKING)
+        job.attachment = stl
+        job.save()
+        self.api.post(f'/api/jobs/{job.pk}/finished/')
+        stl.refresh_from_db()
+        self.assertTrue(Path(stl.file.path).exists())
+
+    def test_finish_requires_working_and_keeps_gcode(self):
+        job = self.job_with_gcode(Job.Status.QUEUED)
+        response = self.api.post(f'/api/jobs/{job.pk}/finished/')
+        self.assertEqual(response.status_code, 409)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
+        self.assertTrue(job.gcode)
+
+    def test_finish_succeeds_even_if_delete_fails(self):
+        job = self.job_with_gcode(Job.Status.WORKING)
+        with mock.patch('django.db.models.fields.files.FieldFile.delete', side_effect=OSError('busy')):
+            self.assertTrue(finish_job(job))
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.FINISHED)
+        self.assertTrue(job.gcode)  # left for cleanup_gcode
+
+    def test_cleanup_command_removes_finished_and_rejected_only(self):
+        finished = self.job_with_gcode(Job.Status.FINISHED)
+        rejected = self.job_with_gcode(Job.Status.REJECTED)
+        queued = self.job_with_gcode(Job.Status.QUEUED)
+        working = self.job_with_gcode(Job.Status.WORKING)
+        call_command('cleanup_gcode', stdout=StringIO())
+        for job, kept in ((finished, False), (rejected, False), (queued, True), (working, True)):
+            job.refresh_from_db()
+            self.assertEqual(bool(job.gcode), kept, job.status)
+
+    def test_cleanup_dry_run_changes_nothing(self):
+        job = self.job_with_gcode(Job.Status.FINISHED)
+        call_command('cleanup_gcode', '--dry-run', stdout=StringIO())
+        job.refresh_from_db()
+        self.assertTrue(job.gcode)
+        self.assertTrue(Path(job.gcode.path).exists())

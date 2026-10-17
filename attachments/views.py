@@ -1,7 +1,8 @@
 import os
 
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.db.models import Q
+from django.db.models import Q, RestrictedError
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
@@ -35,8 +36,12 @@ def attachment_upload(request):
 def attachment_delete(request, pk):
     attachment = get_object_or_404(Attachment, pk=pk, user=request.user)
     if request.method == 'POST':
-        attachment.file.delete(save=False)
-        attachment.delete()
+        try:
+            attachment.delete()
+        except RestrictedError:
+            messages.error(request, f'"{attachment.name}" has print jobs and cannot be deleted.')
+        else:
+            attachment.file.delete(save=False)
     return redirect('attachment-list')
 
 

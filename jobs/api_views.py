@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from .models import Job
+from .services import finish_job
 
 
 @api_view(['GET'])
@@ -54,9 +55,7 @@ def mark_working(request, pk):
 @api_view(['POST'])
 def mark_finished(request, pk):
     job = get_object_or_404(Job, pk=pk)
-    if job.status != Job.Status.WORKING:
+    if not finish_job(job):
+        job.refresh_from_db()
         return Response({'error': f'Job is "{job.status}", expected "working".'}, status=409)
-    job.status = Job.Status.FINISHED
-    job.finished_at = timezone.now()
-    job.save(update_fields=['status', 'finished_at'])
     return Response({'status': 'ok'})
