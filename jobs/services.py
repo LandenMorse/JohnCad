@@ -52,6 +52,41 @@ def reject_job(job):
     return bool(updated)
 
 
+def discard_gcode(job):
+    """Delete a job's G-code file and clear the field. Never raises.
+
+    The G-code is regenerable and large, so it's dropped once the job is done.
+    If storage refuses to delete it, the path stays on the job so the
+    `cleanup_gcode` command can retry. Returns True if nothing is left behind.
+    """
+    if not job.gcode:
+        return True
+    try:
+        job.gcode.delete(save=False)
+    except Exception:
+        logger.exception('Job #%s: could not delete G-code %s.', job.id, job.gcode.name)
+        return False
+    Job.objects.filter(pk=job.pk).update(gcode='')
+    return True
+
+
+def finish_job(job):
+    """Mark a working job finished and delete its G-code.
+
+    Returns False if the job wasn't working. The status change is committed
+    first, so a file-deletion problem can never fail the controller's request.
+    """
+    updated = Job.objects.filter(pk=job.pk, status=Job.Status.WORKING).update(
+        status=Job.Status.FINISHED,
+        finished_at=timezone.now(),
+    )
+    if not updated:
+        return False
+    job.refresh_from_db()
+    discard_gcode(job)
+    return True
+
+
 def reset_stale_claims():
     """Release jobs a crashed/killed worker claimed but never finished."""
     cutoff = timezone.now() - timedelta(seconds=settings.ORCA_SLICER_TIMEOUT + 60)
