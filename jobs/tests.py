@@ -336,6 +336,34 @@ class SliceWorkerTests(ReviewTestBase):
         self.assertEqual(slice_mock.call_count, 2)
 
 
+class AttachmentDeleteTests(ReviewTestBase):
+    def setUp(self):
+        self.client.force_login(self.student)
+
+    def delete(self, attachment):
+        return self.client.post(reverse('attachment-delete', args=[attachment.pk]))
+
+    def test_exported_attachment_cannot_be_deleted(self):
+        self.make_job()
+        self.delete(self.attachment)
+        self.assertTrue(Attachment.objects.filter(pk=self.attachment.pk).exists())
+        self.assertTrue(Path(self.attachment.file.path).exists())
+
+    def test_unexported_attachment_is_deleted(self):
+        extra = Attachment.objects.create(
+            user=self.student, name='extra', file=SimpleUploadedFile('extra.stl', b'solid z'),
+        )
+        path = Path(extra.file.path)
+        self.delete(extra)
+        self.assertFalse(Attachment.objects.filter(pk=extra.pk).exists())
+        self.assertFalse(path.exists())
+
+    def test_deleting_user_still_removes_jobs_and_files(self):
+        self.make_job()
+        self.student.delete()
+        self.assertFalse(Job.objects.exists())
+
+
 class GcodeCleanupTests(ReviewTestBase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

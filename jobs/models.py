@@ -22,7 +22,9 @@ class Job(models.Model):
     )
     attachment = models.ForeignKey(
         'attachments.Attachment',
-        on_delete=models.CASCADE,
+        # Jobs are the print log: a file that has been exported can't be deleted
+        # on its own, but deleting the whole user (who owns the jobs) still works.
+        on_delete=models.RESTRICT,
         related_name='jobs',
     )
     # The class the Student submitted this job to; decides which teachers
