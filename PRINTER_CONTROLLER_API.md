@@ -159,7 +159,8 @@ curl -X POST -H "Authorization: Token 6f599a366326c43440ef876d6fa0bd669b2688ee" 
      https://riponhighprint.com/apijobs/7/finished/
 ```
 
-- `200` — `{"status": "ok"}`, job is now `finished`.
+- `200` — `{"status": "ok"}`, job is now `finished`. The server deletes the
+  job's G-code at this point, so it can't be downloaded again afterwards.
 - `409` — the job wasn't `working` — response body explains the mismatch.
 
 Both status-transition endpoints are **not** idempotent the way the old API

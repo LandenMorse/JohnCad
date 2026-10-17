@@ -86,7 +86,10 @@ API contract.
   - `GET /api/jobs/queue/` — `queued` jobs, FIFO by `approved_at`.
   - `GET /api/jobs/<id>/gcode/` — streams the job's G-code.
   - `POST /api/jobs/<id>/working/` — `queued -> working` (409 if not queued).
-  - `POST /api/jobs/<id>/finished/` — `working -> finished` (409 if not working).
+  - `POST /api/jobs/<id>/finished/` — `working -> finished` (409 if not working);
+    deletes the job's G-code file (`finish_job`/`discard_gcode` in
+    `jobs/services.py`; the `.stl` Attachment is kept). `manage.py
+    cleanup_gcode [--dry-run]` removes leftovers from finished/rejected jobs.
   Full contract + example requests/polling loop in `PRINTER_CONTROLLER_API.md`.
 - Dockerized (Dockerfile, docker-compose with `db`/`web`/`nginx`,
   `entrypoint.sh`) for deployment to a Raspberry Pi hosting the site +
