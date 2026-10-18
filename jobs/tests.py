@@ -1,20 +1,32 @@
+import json
 from datetime import timedelta
+from pathlib import Path
 from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.urls import reverse
 
 from accounts.models import Classroom
 from attachments.models import Attachment
 
+from . import bambuddy
+from .bambuddy import BambuddyError
+from .dispatch import (
+    claim_next_dispatch,
+    dispatch_claimed_job,
+    reset_stale_dispatch_claims,
+    retry_dispatch,
+    sync_from_bambuddy,
+)
 from .models import Job
 from .services import claim_next_job, reset_stale_claims, slice_claimed_job
-from .slicing import SlicerNotConfigured, SlicingFailed
+from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_3mf
 
 User = get_user_model()
 
@@ -92,7 +104,7 @@ class ReviewActionTests(ReviewTestBase):
     def setUp(self):
         self.client.force_login(self.teacher)
 
-    @mock.patch('jobs.services.slice_to_gcode')
+    @mock.patch('jobs.services.slice_to_3mf')
     def test_approve_returns_immediately_without_slicing(self, slice_mock):
         job = self.make_job()
         response = self.client.post(reverse('job-review-approve', args=[job.pk]))
@@ -275,7 +287,7 @@ class SliceWorkerTests(ReviewTestBase):
         self.make_job(status=Job.Status.QUEUED)
         self.assertIsNone(claim_next_job())
 
-    @mock.patch('jobs.services.slice_to_gcode')
+    @mock.patch('jobs.services.slice_to_3mf')
     def test_success_clears_claim(self, slice_mock):
         job = self.approved()
         slice_claimed_job(claim_next_job())
@@ -284,7 +296,7 @@ class SliceWorkerTests(ReviewTestBase):
         self.assertIsNone(job.slicing_started_at)
         self.assertEqual(job.slicing_error, '')
 
-    @mock.patch('jobs.services.slice_to_gcode', side_effect=SlicingFailed('boom'))
+    @mock.patch('jobs.services.slice_to_3mf', side_effect=SlicingFailed('boom'))
     def test_failure_records_error_and_is_not_retried(self, _slice):
         job = self.approved()
         self.assertFalse(slice_claimed_job(claim_next_job()))
@@ -293,14 +305,14 @@ class SliceWorkerTests(ReviewTestBase):
         self.assertEqual(job.slicing_error, 'boom')
         self.assertIsNone(claim_next_job())
 
-    @mock.patch('jobs.services.slice_to_gcode', side_effect=SlicerNotConfigured('no slicer'))
+    @mock.patch('jobs.services.slice_to_3mf', side_effect=SlicerNotConfigured('no slicer'))
     def test_not_configured_records_error(self, _slice):
         job = self.approved()
         slice_claimed_job(claim_next_job())
         job.refresh_from_db()
         self.assertEqual(job.slicing_error, 'no slicer')
 
-    @mock.patch('jobs.services.slice_to_gcode', side_effect=RuntimeError('bug'))
+    @mock.patch('jobs.services.slice_to_3mf', side_effect=RuntimeError('bug'))
     def test_unexpected_error_is_contained(self, _slice):
         job = self.approved()
         self.assertFalse(slice_claimed_job(claim_next_job()))
@@ -317,9 +329,9 @@ class SliceWorkerTests(ReviewTestBase):
         self.assertIsNone(old.slicing_started_at)
         self.assertIsNotNone(fresh.slicing_started_at)
 
-    @mock.patch('jobs.services.slice_to_gcode')
+    @mock.patch('jobs.services.slice_to_3mf')
     def test_command_once_drains_waiting_jobs(self, slice_mock):
-        # The real slice_to_gcode moves the job to "queued"; mimic that so the
+        # The real slice_to_3mf moves the job to "queued"; mimic that so the
         # worker doesn't see the job as still waiting.
         slice_mock.side_effect = lambda job: Job.objects.filter(pk=job.pk).update(
             status=Job.Status.QUEUED,
@@ -328,3 +340,334 @@ class SliceWorkerTests(ReviewTestBase):
         self.approved()
         call_command('slice_worker', '--once')
         self.assertEqual(slice_mock.call_count, 2)
+
+
+BAMBUDDY_SETTINGS = dict(
+    BAMBUDDY_URL='http://bambuddy.test',
+    BAMBUDDY_API_KEY='key',
+    BAMBUDDY_PRINTER_ID='1',
+    BAMBUDDY_WEBHOOK_SECRET='s3cret',
+    BAMBUDDY_STAGED=True,
+)
+
+
+@override_settings(**BAMBUDDY_SETTINGS)
+class DispatchTestBase(ReviewTestBase):
+    def sliced(self, **kwargs):
+        kwargs.setdefault('status', Job.Status.QUEUED)
+        kwargs.setdefault('approved_at', timezone.now())
+        job = self.make_job(**kwargs)
+        job.sliced_file.save(f'{job.id}.gcode.3mf', ContentFile(b'3mf'), save=True)
+        return job
+
+    def dispatched(self, **kwargs):
+        kwargs.setdefault('bambuddy_file_id', '7')
+        kwargs.setdefault('bambuddy_queue_id', '70')
+        kwargs.setdefault('dispatched_at', timezone.now())
+        return self.sliced(**kwargs)
+
+
+class DispatchWorkerTests(DispatchTestBase):
+    def test_claim_takes_oldest_undispatched_sliced_job_once(self):
+        first = self.sliced()
+        second = self.sliced()
+        self.dispatched()
+        self.sliced(dispatch_error='x')
+        self.make_job(status=Job.Status.QUEUED)  # not sliced
+        self.assertEqual(claim_next_dispatch(), first)
+        self.assertEqual(claim_next_dispatch(), second)
+        self.assertIsNone(claim_next_dispatch())
+
+    @mock.patch('jobs.bambuddy.enqueue', return_value='55')
+    @mock.patch('jobs.bambuddy.upload_file', return_value='9')
+    def test_success_uploads_enqueues_and_stores_ids(self, upload, enqueue):
+        job = self.sliced()
+        self.assertTrue(dispatch_claimed_job(claim_next_dispatch()))
+        self.assertEqual(upload.call_args.args[1], f'johncad-job-{job.id}.gcode.3mf')
+        enqueue.assert_called_once_with('9')
+        job.refresh_from_db()
+        self.assertEqual((job.bambuddy_file_id, job.bambuddy_queue_id), ('9', '55'))
+        self.assertIsNotNone(job.dispatched_at)
+        self.assertIsNone(job.dispatch_started_at)
+        self.assertEqual(job.status, Job.Status.QUEUED)
+        self.assertEqual(job.dispatch_state, 'staged')
+
+    @mock.patch('jobs.bambuddy.enqueue', side_effect=BambuddyError('queue down'))
+    @mock.patch('jobs.bambuddy.upload_file', return_value='9')
+    def test_failure_records_error_keeps_upload_and_is_not_retried(self, upload, _enqueue):
+        job = self.sliced()
+        self.assertFalse(dispatch_claimed_job(claim_next_dispatch()))
+        job.refresh_from_db()
+        self.assertEqual(job.dispatch_state, 'failed')
+        self.assertEqual(job.dispatch_error, 'queue down')
+        self.assertEqual(job.bambuddy_file_id, '9')
+        self.assertIsNone(claim_next_dispatch())
+
+        # Retry re-enqueues without uploading again.
+        self.assertTrue(retry_dispatch(job))
+        with mock.patch('jobs.bambuddy.enqueue', return_value='56'):
+            self.assertTrue(dispatch_claimed_job(claim_next_dispatch()))
+        self.assertEqual(upload.call_count, 1)
+
+    @override_settings(BAMBUDDY_URL='')
+    def test_not_configured_records_error(self):
+        job = self.sliced()
+        dispatch_claimed_job(claim_next_dispatch())
+        job.refresh_from_db()
+        self.assertIn('BAMBUDDY_URL', job.dispatch_error)
+
+    def test_stale_claim_released(self):
+        stale = timezone.now() - timedelta(seconds=settings.BAMBUDDY_TIMEOUT * 3 + 120)
+        old = self.sliced(dispatch_started_at=stale)
+        fresh = self.sliced(dispatch_started_at=timezone.now())
+        self.assertEqual(reset_stale_dispatch_claims(), 1)
+        old.refresh_from_db()
+        fresh.refresh_from_db()
+        self.assertIsNone(old.dispatch_started_at)
+        self.assertIsNotNone(fresh.dispatch_started_at)
+
+    @mock.patch('jobs.bambuddy.queue_events', return_value={})
+    @mock.patch('jobs.bambuddy.enqueue', side_effect=['1', '2'])
+    @mock.patch('jobs.bambuddy.upload_file', side_effect=['a', 'b'])
+    def test_command_once_drains_and_polls(self, _upload, enqueue, poll):
+        self.sliced()
+        self.sliced()
+        call_command('dispatch_worker', '--once')
+        self.assertEqual(enqueue.call_count, 2)
+        poll.assert_called_once()
+
+    @mock.patch('jobs.bambuddy.requests.request')
+    def test_client_sends_key_and_queue_body(self, request):
+        request.return_value = mock.Mock(status_code=200, content=b'{"id": 3}')
+        request.return_value.json.return_value = {'id': 3}
+        self.assertEqual(bambuddy.enqueue('9'), '3')
+        method, url = request.call_args.args
+        self.assertEqual((method, url), ('POST', 'http://bambuddy.test/api/v1/queue'))
+        self.assertEqual(request.call_args.kwargs['headers'], {'X-API-Key': 'key'})
+        self.assertEqual(
+            request.call_args.kwargs['json'],
+            {'archive_id': 9, 'printer_id': 1, 'manual_start': True},
+        )
+
+
+class WebhookTests(DispatchTestBase):
+    url = '/api/bambuddy/webhook/'
+
+    def post(self, event, job=None, secret='s3cret', **data):
+        if job is not None:
+            data.setdefault('filename', f'johncad-job-{job.id}.gcode.3mf')
+        return self.client.post(
+            self.url,
+            json.dumps({'event': event, 'data': data}),
+            content_type='application/json',
+            headers={'X-Webhook-Secret': secret} if secret else {},
+        )
+
+    def test_secret_required(self):
+        job = self.dispatched()
+        self.assertEqual(self.post('print_started', job, secret='nope').status_code, 403)
+        self.assertEqual(self.post('print_started', job, secret='').status_code, 403)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
+
+    def test_secret_in_query_string(self):
+        job = self.dispatched()
+        response = self.client.post(
+            self.url + '?secret=s3cret',
+            json.dumps({'event': 'print_started', 'data': {'filename': f'johncad-job-{job.id}.gcode.3mf'}}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @override_settings(BAMBUDDY_WEBHOOK_SECRET='')
+    def test_blank_secret_rejects_everything(self):
+        job = self.dispatched()
+        self.assertEqual(self.post('print_started', job, secret='').status_code, 403)
+
+    def test_full_lifecycle_and_idempotency(self):
+        job = self.dispatched()
+        self.assertEqual(self.post('print_started', job).json()['status'], 'ok')
+        self.assertEqual(self.post('print_started', job).json()['status'], 'unchanged')
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.WORKING)
+        self.assertIsNotNone(job.working_at)
+        self.post('print_complete', job, status='success')
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.FINISHED)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(self.post('print_complete', job).json()['status'], 'unchanged')
+
+    def test_complete_before_start_is_409(self):
+        job = self.dispatched()
+        self.assertEqual(self.post('print_complete', job).status_code, 409)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
+
+    def test_failure_and_unsuccessful_complete(self):
+        job = self.dispatched(status=Job.Status.WORKING)
+        self.post('print_failed', job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.FAILED)
+        self.assertIn('print_failed', job.dispatch_error)
+        other = self.dispatched(status=Job.Status.WORKING, bambuddy_file_id='8')
+        self.post('print_complete', other, status='cancelled')
+        other.refresh_from_db()
+        self.assertEqual(other.status, Job.Status.FAILED)
+
+    def test_match_by_archive_id(self):
+        job = self.dispatched(bambuddy_file_id='42')
+        self.post('print_started', archive_id=42, filename='renamed.3mf')
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.WORKING)
+
+    def test_unknown_events_and_jobs_ignored(self):
+        job = self.dispatched()
+        self.assertEqual(self.post('print_progress', job).json()['status'], 'ignored')
+        self.assertEqual(self.post('print_started', archive_id=999).json()['status'], 'ignored')
+        undispatched = self.sliced()
+        self.assertEqual(self.post('print_started', undispatched).json()['status'], 'ignored')
+
+    def test_bad_json(self):
+        response = self.client.post(
+            self.url, 'nope', content_type='application/json',
+            headers={'X-Webhook-Secret': 's3cret'},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_not_allowed(self):
+        self.assertEqual(self.client.get(self.url).status_code, 405)
+
+    def test_old_printer_controller_api_is_gone(self):
+        self.client.force_login(self.root)
+        for path in ('/api/jobs/queue/', '/api/jobs/1/gcode/'):
+            self.assertEqual(self.client.get(path).status_code, 404)
+        for path in ('/api/jobs/1/working/', '/api/jobs/1/finished/'):
+            self.assertEqual(self.client.post(path).status_code, 404)
+
+
+class PollingFallbackTests(DispatchTestBase):
+    def test_sync_applies_remote_status(self):
+        started = self.dispatched(bambuddy_queue_id='1')
+        done = self.dispatched(bambuddy_queue_id='2')  # missed its start webhook
+        failed = self.dispatched(bambuddy_queue_id='3', status=Job.Status.WORKING)
+        untouched = self.dispatched(bambuddy_queue_id='4')
+        events = {'1': 'started', '2': 'completed', '3': 'failed'}
+        with mock.patch('jobs.bambuddy.queue_events', return_value=events):
+            self.assertEqual(sync_from_bambuddy(), 3)
+        statuses = [Job.objects.get(pk=j.pk).status for j in (started, done, failed, untouched)]
+        self.assertEqual(
+            statuses,
+            [Job.Status.WORKING, Job.Status.FINISHED, Job.Status.FAILED, Job.Status.QUEUED],
+        )
+
+    @mock.patch('jobs.bambuddy.queue_events')
+    def test_no_poll_when_nothing_in_flight(self, poll):
+        self.sliced()
+        self.assertEqual(sync_from_bambuddy(), 0)
+        poll.assert_not_called()
+
+    @mock.patch('jobs.bambuddy.requests.request')
+    def test_queue_events_maps_statuses(self, request):
+        items = [
+            {'id': 1, 'status': 'printing'},
+            {'id': 2, 'status': 'completed'},
+            {'id': 3, 'status': 'pending'},
+            {'id': 4, 'status': 'cancelled'},
+        ]
+        request.return_value = mock.Mock(status_code=200, content=b'[]')
+        request.return_value.json.return_value = items
+        self.assertEqual(
+            bambuddy.queue_events(), {'1': 'started', '2': 'completed', '4': 'failed'},
+        )
+
+
+class DispatchButtonTests(DispatchTestBase):
+    def test_review_retry_dispatch_error(self):
+        job = self.sliced(dispatch_error='down')
+        self.client.force_login(self.teacher)
+        response = self.client.get(reverse('job-review'))
+        self.assertContains(response, 'Sending failed')
+        self.assertContains(response, reverse('job-review-retry-dispatch', args=[job.pk]))
+        self.client.post(reverse('job-review-retry-dispatch', args=[job.pk]))
+        job.refresh_from_db()
+        self.assertEqual(job.dispatch_state, 'waiting')
+
+    def test_retry_failed_print_requeues(self):
+        job = self.dispatched(
+            status=Job.Status.FAILED, released_at=timezone.now(), failed_at=timezone.now(),
+            dispatch_error='print_failed',
+        )
+        self.client.force_login(self.teacher)
+        self.client.post(reverse('job-review-retry-dispatch', args=[job.pk]))
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
+        self.assertEqual(job.bambuddy_queue_id, '')
+        self.assertEqual(job.bambuddy_file_id, '7')
+        self.assertEqual(claim_next_dispatch(), job)
+
+    def test_cannot_retry_healthy_or_other_class_job(self):
+        job = self.dispatched()
+        self.client.force_login(self.teacher)
+        self.client.post(reverse('job-review-retry-dispatch', args=[job.pk]))
+        job.refresh_from_db()
+        self.assertEqual(job.bambuddy_queue_id, '70')
+        other_teacher = User.objects.create_user('other', password='pw', is_staff=True)
+        self.client.force_login(other_teacher)
+        failed = self.sliced(dispatch_error='x')
+        response = self.client.post(reverse('job-review-retry-dispatch', args=[failed.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    @mock.patch('jobs.bambuddy.release_next')
+    def test_release_next_releases_oldest_staged(self, release):
+        first = self.dispatched(dispatched_at=timezone.now() - timedelta(minutes=5))
+        second = self.dispatched()
+        self.client.force_login(self.teacher)
+        self.assertContains(self.client.get(reverse('queue')), 'Plate cleared, release next')
+        self.client.post(reverse('queue-release-next'))
+        release.assert_called_once()
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNotNone(first.released_at)
+        self.assertIsNone(second.released_at)
+        self.assertEqual(first.dispatch_state, 'released')
+
+    @mock.patch('jobs.bambuddy.release_next', side_effect=BambuddyError('offline'))
+    def test_release_next_error_shown_and_not_marked(self, _release):
+        job = self.dispatched()
+        self.client.force_login(self.teacher)
+        response = self.client.post(reverse('queue-release-next'), follow=True)
+        self.assertContains(response, 'offline')
+        job.refresh_from_db()
+        self.assertIsNone(job.released_at)
+
+    def test_release_next_staff_only(self):
+        self.dispatched()
+        self.client.force_login(self.student)
+        self.assertNotContains(self.client.get(reverse('queue')), 'release next')
+        self.assertEqual(self.client.post(reverse('queue-release-next')).status_code, 403)
+
+
+class SlicingOutputTests(ReviewTestBase):
+    @override_settings(ORCA_SLICER_SETTINGS='m.json;p.json', ORCA_SLICER_CMD='orca')
+    def test_exports_3mf_and_queues(self):
+        job = self.make_job(status=Job.Status.APPROVED)
+
+        def fake_run(command, **kwargs):
+            self.assertIn('--export-3mf', command)
+            outdir = Path(command[command.index('--outputdir') + 1])
+            (outdir / command[command.index('--export-3mf') + 1]).write_bytes(b'3mf')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_run):
+            slice_to_3mf(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
+        self.assertTrue(job.sliced_file.name.endswith('.gcode.3mf'))
+
+    @override_settings(ORCA_SLICER_SETTINGS='m.json;p.json', ORCA_SLICER_CMD='orca')
+    def test_no_3mf_output_fails(self):
+        job = self.make_job(status=Job.Status.APPROVED)
+        result = mock.Mock(returncode=0, stdout='', stderr='')
+        with mock.patch('jobs.slicing.subprocess.run', return_value=result):
+            with self.assertRaises(SlicingFailed):
+                slice_to_3mf(job)

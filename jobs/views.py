@@ -9,6 +9,8 @@ from django.views.decorators.http import require_POST
 from accounts.permissions import classes_visible_to, staff_required
 from attachments.models import Attachment
 
+from .bambuddy import BambuddyError, BambuddyNotConfigured
+from .dispatch import next_staged_job, release_next, retry_dispatch
 from .models import Job
 from .services import approve_job, jobs_visible_to, reject_job
 
@@ -39,7 +41,26 @@ def queue(request):
     jobs = Job.objects.filter(
         status__in=[Job.Status.QUEUED, Job.Status.WORKING],
     ).select_related('user', 'attachment').order_by('approved_at')
-    return render(request, 'jobs/queue.html', {'jobs': jobs})
+    return render(request, 'jobs/queue.html', {
+        'jobs': jobs,
+        'next_staged': next_staged_job() if request.user.is_staff else None,
+    })
+
+
+@staff_required
+@require_POST
+def queue_release_next(request):
+    """Staff confirm the plate is clear; Bambuddy starts the next staged job."""
+    try:
+        job = release_next()
+    except (BambuddyError, BambuddyNotConfigured) as exc:
+        messages.error(request, f'Could not release the next job: {exc}')
+        return redirect('queue')
+    if job is None:
+        messages.error(request, 'No job is waiting for the plate to be cleared.')
+    else:
+        messages.success(request, f'Released "{job.attachment.name}" to the printer.')
+    return redirect('queue')
 
 
 @staff_required
@@ -60,7 +81,11 @@ def review(request):
         'jobs': jobs,
         'classes': classes,
         'selected_classroom': selected,
-        'auto_refresh': any(job.slicing_state in ('waiting', 'slicing') for job in jobs),
+        'auto_refresh': any(
+            job.slicing_state in ('waiting', 'slicing')
+            or job.dispatch_state in ('waiting', 'dispatching')
+            for job in jobs
+        ),
         'pending_count': sum(job.status == Job.Status.PENDING for job in jobs),
     })
 
@@ -97,4 +122,15 @@ def review_reject(request, pk):
         messages.success(request, f'Job #{job.id} rejected.')
     else:
         messages.error(request, f'Job #{job.id} is no longer pending.')
+    return _back_to_review(request)
+
+
+@staff_required
+@require_POST
+def review_retry_dispatch(request, pk):
+    job = get_object_or_404(jobs_visible_to(request.user), pk=pk)
+    if retry_dispatch(job):
+        messages.success(request, f'Job #{job.id} will be sent to the printer again.')
+    else:
+        messages.error(request, f'Job #{job.id} can no longer be retried.')
     return _back_to_review(request)

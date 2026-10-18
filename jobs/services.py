@@ -7,7 +7,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import Job
-from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_gcode
+from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def claim_next_job():
             .select_related('attachment')
             .filter(
                 status=Job.Status.APPROVED,
-                gcode='',
+                sliced_file='',
                 slicing_error='',
                 slicing_started_at__isnull=True,
             )
@@ -92,7 +92,7 @@ def slice_claimed_job(job):
     the job stays "approved" until a teacher retries it.
     """
     try:
-        slice_to_gcode(job)
+        slice_to_3mf(job)
     except (SlicerNotConfigured, SlicingFailed) as exc:
         if isinstance(exc, SlicerNotConfigured):
             logger.warning('Job #%s not sliced, slicer not configured: %s', job.id, exc)

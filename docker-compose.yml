@@ -39,6 +39,27 @@ services:
     depends_on:
       - web
 
+  # Bambuddy talks to the printers (FTPS 990 + MQTT 8883) and exposes the
+  # REST API JohnCad's dispatch_worker uses. Host networking (Bambuddy's own
+  # recommendation on Linux) lets it reach printers over Tailscale routes and
+  # post its webhook to gunicorn on 127.0.0.1:8000, so the webhook never goes
+  # through public nginx. It listens on BAMBUDDY_PORT (8080, since gunicorn
+  # has 8000). Start it alone with: docker compose up -d bambuddy
+  bambuddy:
+    # Pin a release tag (BAMBUDDY_VERSION in .env) once one is chosen;
+    # "latest" can change printer behavior under you.
+    image: ghcr.io/maziggy/bambuddy:${BAMBUDDY_VERSION:-latest}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PORT: ${BAMBUDDY_PORT:-8080}
+      TZ: America/Los_Angeles
+    volumes:
+      - bambuddy_data:/app/data
+      - bambuddy_logs:/app/logs
+
 volumes:
   postgres_data:
   private_media_data:
+  bambuddy_data:
+  bambuddy_logs:
