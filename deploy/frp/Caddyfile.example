@@ -1,0 +1,15 @@
+# /etc/caddy/Caddyfile on the HOME Raspberry Pi.
+# Caddy gets/renews the Let's Encrypt cert and sets X-Forwarded-Proto: https,
+# which Django trusts (SECURE_PROXY_SSL_HEADER in cms/settings.py).
+# Router must forward TCP 80, 443 and 7000 to this machine.
+
+riponhighschoolprint.com {
+	request_body {
+		max_size 512MB          # keep in sync with DATA_UPLOAD_MAX_MEMORY_SIZE
+	}
+	reverse_proxy 127.0.0.1:8080 {
+		transport http {
+			response_header_timeout 900s   # matches gunicorn --timeout 900
+		}
+	}
+}

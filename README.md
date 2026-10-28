@@ -287,6 +287,12 @@ python manage.py migrate && python manage.py collectstatic --noinput
 sudo systemctl restart johncad
 ```
 
+### Serving through an frp tunnel (no inbound access at the school)
+
+If the school network can't accept inbound connections, run `frps` + Caddy on a
+home Pi and `frpc` on the school Pi. Example configs and step-by-step notes are in
+[`deploy/frp/`](deploy/frp/README.md).
+
 ### Printer controller setup
 
 The printer controller (an Arduino UNO R4 WiFi, not part of this repo) needs

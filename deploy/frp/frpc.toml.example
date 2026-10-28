@@ -1,0 +1,16 @@
+# frpc config for the school Raspberry Pi (runs JohnCad: gunicorn on 127.0.0.1:8000).
+# Copy to /opt/frp/frpc.toml and fill in the token. See deploy/frp/README.md.
+
+serverAddr = "riponhighschoolprint.com"   # home server running frps
+serverPort = 7000
+auth.method = "token"
+auth.token = "REPLACE_WITH_THE_SAME_TOKEN_AS_FRPS"
+transport.tls.enable = true
+log.level = "info"
+
+[[proxies]]
+name = "johncad"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 8000                          # gunicorn (bypasses nginx; TLS ends at home Caddy)
+customDomains = ["riponhighschoolprint.com"]

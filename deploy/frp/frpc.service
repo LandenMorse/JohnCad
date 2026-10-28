@@ -1,0 +1,12 @@
+[Unit]
+Description=frpc tunnel to home server (JohnCad)
+After=network-online.target johncad.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/frp/frpc -c /opt/frp/frpc.toml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

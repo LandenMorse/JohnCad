@@ -1,0 +1,10 @@
+# frps config for the HOME Raspberry Pi (public entry point). Copy to /opt/frp/frps.toml.
+# Caddy (see Caddyfile.example) terminates HTTPS on 443 and proxies to vhostHTTPPort.
+
+bindPort = 7000
+vhostHTTPPort = 8080
+proxyBindAddr = "127.0.0.1"               # only Caddy on this machine can reach 8080
+auth.method = "token"
+auth.token = "REPLACE_WITH_openssl_rand_-hex_24"
+transport.tls.force = true
+log.level = "info"
