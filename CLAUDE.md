@@ -25,6 +25,16 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 - `Attachment` model (`attachments/models.py`): a Student's uploaded `.stl`
   file, `FileField`-backed, stored under `MEDIA_ROOT` (private — never
   mounted at a public URL, only reachable through authenticated views).
+- `Printer` model (`jobs/models.py`, managed in `/admin/`): name, Bambuddy
+  printer id, the OrcaSlicer preset paths for that printer's model, and an
+  `is_active` flag. A teacher picks one on `/review/` when approving
+  (required once any active printer exists); it sets `Job.printer` (nullable,
+  `PROTECT`). The printer decides the slicer presets (`jobs/slicing.py`
+  `_presets_for`: a printer's own presets replace `ORCA_SLICER_*` as a pair,
+  never mixed), the Bambuddy printer the job is enqueued on, and which
+  "Plate cleared, release next" button (one per printer on `/queue/`) starts
+  it. Jobs with no printer (older jobs, or no printers set up) use the
+  `.env` settings, so single-printer setups keep working.
 - `Job` model (`jobs/models.py`): one specific request to print a
   Student's `Attachment`. Status lifecycle: `pending -> approved -> queued ->
   working -> finished`, plus `rejected` (terminal, from `pending`) and
@@ -88,7 +98,8 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 - **Dispatch** (`jobs/dispatch.py`, `dispatch_worker` command, run as the
   `johncad-dispatcher` systemd service): claims sliced `queued` jobs with no
   `bambuddy_queue_id`, uploads the file as `johncad-job-<id>.gcode.3mf`,
-  enqueues it staged ("Queue Only") on `BAMBUDDY_PRINTER_ID`, stores
+  enqueues it staged ("Queue Only") on the job's printer
+  (`Job.printer.bambuddy_printer_id`, else the `BAMBUDDY_PRINTER_ID` fallback), stores
   `bambuddy_file_id`/`bambuddy_queue_id`/`dispatched_at`. Errors go in
   `dispatch_error`, shown on `/review/` with a Retry button. The worker also
   polls each in-flight job's queue item (`GET /queue/<id>`) every 60s as a
@@ -139,8 +150,8 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   confirm OrcaSlicer's CLI 3MF output works on the printer model.
 - **Verify OrcaSlicer end-to-end on the Pi** (headless Flatpak, filesystem
   overrides, preset paths).
-- Multi-printer and "any X1C"-style model routing (one hardcoded
-  `BAMBUDDY_PRINTER_ID` for now); release-next is per printer.
+- "Any X1C"-style automatic printer choice: teachers pick the printer by
+  hand on `/review/` for now.
 - Pin the Bambuddy image version; pick one deployment path (the `web`
   container still can't slice).
 - Repo cleanup before open-sourcing: LICENSE, quick-start, configurable

@@ -76,7 +76,8 @@ def dispatch_claimed_job(job):
             # Saved straight away so a failed enqueue doesn't re-upload on retry.
             Job.objects.filter(pk=job.pk).update(bambuddy_file_id=file_id)
             job.bambuddy_file_id = file_id
-        queue_id = bambuddy.enqueue(job.bambuddy_file_id)
+        printer_id = job.printer.bambuddy_printer_id if job.printer_id else None
+        queue_id = bambuddy.enqueue(job.bambuddy_file_id, printer_id)
     except (bambuddy.BambuddyNotConfigured, bambuddy.BambuddyError) as exc:
         logger.error('Job #%s dispatch failed: %s', job.id, exc)
         _record_dispatch_error(job, str(exc) or exc.__class__.__name__)
@@ -120,20 +121,34 @@ def retry_dispatch(job):
     ))
 
 
-def next_staged_job():
-    """The oldest job sitting in Bambuddy waiting for the plate to be cleared."""
+def _staged_jobs():
     return (
         Job.objects.filter(status=Job.Status.QUEUED, released_at__isnull=True)
         .exclude(bambuddy_queue_id='')
+        .select_related('printer', 'attachment', 'user')
         .order_by('dispatched_at', 'id')
-        .first()
     )
 
 
-def release_next():
-    """Staff "plate cleared, release next". Returns the released job, or None
-    if nothing is waiting. Raises bambuddy errors for the view to show."""
-    job = next_staged_job()
+def next_staged_job(printer=None):
+    """The oldest job waiting for the plate to be cleared on `printer` (None =
+    jobs with no printer, which go to the BAMBUDDY_PRINTER_ID printer)."""
+    return _staged_jobs().filter(printer=printer).first()
+
+
+def next_staged_jobs():
+    """The next staged job for each printer that has any, oldest first."""
+    heads = {}
+    for job in _staged_jobs():
+        heads.setdefault(job.printer_id, job)
+    return list(heads.values())
+
+
+def release_next(printer=None):
+    """Staff "plate cleared, release next" for one printer. Returns the
+    released job, or None if nothing is waiting there. Raises bambuddy errors
+    for the view to show."""
+    job = next_staged_job(printer)
     if job is None:
         return None
     bambuddy.start_item(job.bambuddy_queue_id)

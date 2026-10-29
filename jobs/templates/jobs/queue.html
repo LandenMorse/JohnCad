@@ -6,15 +6,16 @@
 
 {% if user.is_staff %}
 <div class="card">
-    {% if next_staged %}
-    <p>Next up: <strong>{{ next_staged.attachment.name }}</strong> ({{ next_staged.user.username }}). Clear the build plate, then release it.</p>
+    {% for staged in next_staged %}
+    <p>{% if staged.printer %}<strong>{{ staged.printer.name }}</strong> &mdash; {% endif %}Next up: <strong>{{ staged.attachment.name }}</strong> ({{ staged.user.username }}). Clear the build plate, then release it.</p>
     <form method="post" action="{% url 'queue-release-next' %}">
         {% csrf_token %}
-        <button type="submit" class="btn-success">Plate cleared, release next</button>
+        {% if staged.printer %}<input type="hidden" name="printer" value="{{ staged.printer.pk }}">{% endif %}
+        <button type="submit" class="btn-success">Plate cleared{% if staged.printer %} on {{ staged.printer.name }}{% endif %}, release next</button>
     </form>
-    {% else %}
+    {% empty %}
     <p class="subtitle">No job is waiting for the plate to be cleared.</p>
-    {% endif %}
+    {% endfor %}
 </div>
 {% endif %}
 
@@ -22,17 +23,18 @@
     <div class="table-wrap">
     <table>
         <thead>
-            <tr><th>Attachment</th><th>Student</th><th>Status</th></tr>
+            <tr><th>Attachment</th><th>Student</th><th>Printer</th><th>Status</th></tr>
         </thead>
         <tbody>
             {% for job in jobs %}
             <tr>
                 <td>{{ job.attachment.name }}</td>
                 <td>{{ job.user.username }}</td>
+                <td>{{ job.printer.name|default:"—" }}</td>
                 <td><span class="status-badge">{% if job.dispatch_state == 'staged' %}Waiting for plate clear{% elif job.dispatch_state == 'released' %}Starting{% else %}{{ job.get_status_display }}{% endif %}</span></td>
             </tr>
             {% empty %}
-            <tr class="empty-row"><td colspan="3">Nothing in the queue right now.</td></tr>
+            <tr class="empty-row"><td colspan="4">Nothing in the queue right now.</td></tr>
             {% endfor %}
         </tbody>
     </table>

@@ -66,7 +66,7 @@ commented list):
 | `BAMBUDDY_URL` | Bambuddy base URL, default `http://127.0.0.1:8080` (Bambuddy runs on the same host as Django)                              |
 | `BAMBUDDY_API_KEY` | Bambuddy API key (Manage library, Add to queue, Read status); blank = dispatch not configured                        |
 | `BAMBUDDY_WEBHOOK_SECRET` | Shared secret Bambuddy's webhook must send; blank rejects all webhooks                                         |
-| `BAMBUDDY_PRINTER_ID` | Bambuddy's id for the printer jobs go to                                                                                |
+| `BAMBUDDY_PRINTER_ID` | Fallback Bambuddy printer id for jobs with no printer chosen (single-printer setups; otherwise add Printers in `/admin/`) |
 | `BAMBUDDY_STAGED` | `True` (default): jobs wait in Bambuddy until staff release them after clearing the plate                                |
 | `BAMBUDDY_TIMEOUT` | Bambuddy request timeout in seconds, default `60`                                                                     |
 | `BAMBUDDY_VERSION` / `BAMBUDDY_PORT` | Image tag and port for the compose `bambuddy` service                                                       |
@@ -332,10 +332,17 @@ Pi:
    printers (LAN Mode on) and **hand-upload and print one `.gcode.3mf`**
    before going further.
 2. In Bambuddy (Settings > API keys), create a key with **Manage library**,
-   **Add to queue** and **Read status**. Put it in `BAMBUDDY_API_KEY`. Set
-   `BAMBUDDY_PRINTER_ID` to the printer's id in Bambuddy (shown in
-   `GET /api/v1/printers/`). `BAMBUDDY_URL` defaults to
-   `http://127.0.0.1:8080`.
+   **Add to queue** and **Read status**. Put it in `BAMBUDDY_API_KEY`.
+   `BAMBUDDY_URL` defaults to `http://127.0.0.1:8080`.
+   **Printers:** for each printer, add a **Printer** in JohnCad's `/admin/`
+   (superuser): a name teachers will see, its Bambuddy id (shown in
+   `GET /api/v1/printers/`), and the OrcaSlicer machine + process preset
+   `.json` paths (`;`-separated) for that printer's model, plus filament
+   presets if needed. Teachers then choose the printer when approving a job
+   on `/review/`; it decides the slicer presets and where the job is sent.
+   The job's print is released per printer on `/queue/`. Until you add a
+   printer, jobs use `BAMBUDDY_PRINTER_ID` and `ORCA_SLICER_SETTINGS` from
+   `.env` instead (single-printer setup).
 3. Set `BAMBUDDY_WEBHOOK_SECRET` to a random string. In Bambuddy's
    Settings > Notifications, add a **Webhook** provider: URL
    `http://127.0.0.1:8000/api/bambuddy/webhook/`, payload format

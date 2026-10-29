@@ -128,13 +128,15 @@ def upload_file(fileobj, filename):
     return _id(data, 'upload')
 
 
-def enqueue(file_id):
-    """Add an uploaded library file to the printer's queue. Returns the queue
-    item id. With BAMBUDDY_STAGED the item waits for start_item() (bed clear).
+def enqueue(file_id, printer_id=None):
+    """Add an uploaded library file to a printer's queue. Returns the queue
+    item id. `printer_id` is Bambuddy's id for the job's printer; without one
+    the BAMBUDDY_PRINTER_ID setting is used. With BAMBUDDY_STAGED the item
+    waits for start_item() (bed clear).
     """
     body = {
         'library_file_id': _as_int(file_id),
-        'printer_id': _printer_id(),
+        'printer_id': _as_int(printer_id) if printer_id is not None else _printer_id(),
         'manual_start': bool(settings.BAMBUDDY_STAGED),
     }
     return _id(_request('POST', QUEUE_PATH, json=body), 'queue')

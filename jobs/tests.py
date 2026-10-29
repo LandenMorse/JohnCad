@@ -24,8 +24,8 @@ from .dispatch import (
     retry_dispatch,
     sync_from_bambuddy,
 )
-from .models import Job
-from .services import claim_next_job, reset_stale_claims, slice_claimed_job
+from .models import Job, Printer
+from .services import approve_job, claim_next_job, reset_stale_claims, slice_claimed_job
 from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_3mf
 
 User = get_user_model()
@@ -384,7 +384,7 @@ class DispatchWorkerTests(DispatchTestBase):
         job = self.sliced()
         self.assertTrue(dispatch_claimed_job(claim_next_dispatch()))
         self.assertEqual(upload.call_args.args[1], f'johncad-job-{job.id}.gcode.3mf')
-        enqueue.assert_called_once_with('9')
+        enqueue.assert_called_once_with('9', None)
         job.refresh_from_db()
         self.assertEqual((job.bambuddy_file_id, job.bambuddy_queue_id), ('9', '55'))
         self.assertIsNotNone(job.dispatched_at)
@@ -715,3 +715,213 @@ class SlicingOutputTests(ReviewTestBase):
         with mock.patch('jobs.slicing.subprocess.run', return_value=result):
             with self.assertRaises(SlicingFailed):
                 slice_to_3mf(job)
+
+
+def fake_orca(outputs):
+    """subprocess.run stand-in that records the command and writes a .3mf."""
+    def run(command, **kwargs):
+        outputs.append(command)
+        outdir = Path(command[command.index('--outputdir') + 1])
+        (outdir / command[command.index('--export-3mf') + 1]).write_bytes(b'3mf')
+        return mock.Mock(returncode=0, stdout='', stderr='')
+    return run
+
+
+class PrinterSelectionTests(ReviewTestBase):
+    """Teacher picks the printer on /review/; it is required once printers exist."""
+
+    def setUp(self):
+        self.p1 = Printer.objects.create(name='X1C', bambuddy_printer_id=4)
+        self.p2 = Printer.objects.create(name='P1S', bambuddy_printer_id=9)
+        self.client.force_login(self.teacher)
+
+    def approve(self, job, **data):
+        return self.client.post(reverse('job-review-approve', args=[job.pk]), data, follow=True)
+
+    def test_approve_with_printer_sets_it(self):
+        job = self.make_job()
+        response = self.approve(job, printer=self.p2.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.APPROVED)
+        self.assertEqual(job.printer, self.p2)
+        self.assertContains(response, 'approved for P1S')
+
+    def test_approve_without_printer_is_refused(self):
+        job = self.make_job()
+        response = self.approve(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.PENDING)
+        self.assertContains(response, 'Choose a printer')
+
+    def test_unknown_or_inactive_printer_is_refused(self):
+        self.p1.is_active = False
+        self.p1.save()
+        job = self.make_job()
+        for value in (self.p1.pk, 99999, 'abc'):
+            self.approve(job, printer=value)
+            job.refresh_from_db()
+            self.assertEqual(job.status, Job.Status.PENDING)
+            self.assertIsNone(job.printer)
+
+    def test_without_any_printers_set_up_approval_still_works(self):
+        Printer.objects.all().delete()
+        job = self.make_job()
+        self.approve(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.APPROVED)
+        self.assertIsNone(job.printer)
+
+    def test_slicing_retry_can_change_printer(self):
+        job = self.make_job(
+            status=Job.Status.APPROVED, slicing_error='bad preset', printer=self.p1,
+        )
+        self.approve(job, printer=self.p2.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.printer, self.p2)
+        self.assertEqual(job.slicing_error, '')
+
+    def test_admin_style_approve_needs_a_printer(self):
+        job = self.make_job()
+        self.assertFalse(approve_job(job))
+        job.printer = self.p1
+        job.save()
+        self.assertTrue(approve_job(job))
+
+    def test_review_page_shows_picker_and_printer_column(self):
+        self.make_job()
+        self.make_job(status=Job.Status.APPROVED, printer=self.p1)
+        response = self.client.get(reverse('job-review'))
+        self.assertContains(response, '<option value="%d">X1C</option>' % self.p1.pk, html=False)
+        self.assertContains(response, 'name="printer"')
+        self.assertContains(response, '<td>X1C</td>', html=False)
+
+    def test_inactive_printer_not_offered(self):
+        self.p2.is_active = False
+        self.p2.save()
+        self.make_job()
+        self.assertNotContains(self.client.get(reverse('job-review')), 'P1S')
+
+    def test_no_picker_when_no_printers(self):
+        Printer.objects.all().delete()
+        self.make_job()
+        self.assertNotContains(self.client.get(reverse('job-review')), 'name="printer"')
+
+    def test_printer_with_jobs_cannot_be_deleted(self):
+        from django.db.models import ProtectedError
+        self.make_job(printer=self.p1)
+        with self.assertRaises(ProtectedError):
+            self.p1.delete()
+
+
+@override_settings(ORCA_SLICER_CMD='orca')
+class PrinterSlicingTests(ReviewTestBase):
+    def slice(self, job):
+        commands = []
+        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
+            slice_to_3mf(job)
+        return commands[0]
+
+    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
+    def test_printer_presets_replace_env_presets(self):
+        printer = Printer.objects.create(
+            name='X1C', bambuddy_printer_id=1,
+            slicer_settings='x1c-m.json;x1c-p.json', slicer_filaments='x1c-f.json',
+        )
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
+        self.assertEqual(command[command.index('--load-settings') + 1], 'x1c-m.json;x1c-p.json')
+        self.assertEqual(command[command.index('--load-filaments') + 1], 'x1c-f.json')
+
+    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
+    def test_printer_presets_never_mix_with_env_filaments(self):
+        printer = Printer.objects.create(
+            name='P1S', bambuddy_printer_id=2, slicer_settings='p1s-m.json;p1s-p.json',
+        )
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
+        self.assertEqual(command[command.index('--load-settings') + 1], 'p1s-m.json;p1s-p.json')
+        self.assertNotIn('--load-filaments', command)
+
+    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
+    def test_printer_without_presets_falls_back_to_env_pair(self):
+        printer = Printer.objects.create(name='A1', bambuddy_printer_id=3)
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
+        self.assertEqual(command[command.index('--load-settings') + 1], 'env-m.json;env-p.json')
+        self.assertEqual(command[command.index('--load-filaments') + 1], 'env-f.json')
+
+    @override_settings(ORCA_SLICER_SETTINGS='')
+    def test_no_presets_anywhere_names_the_printer(self):
+        printer = Printer.objects.create(name='A1', bambuddy_printer_id=3)
+        job = self.make_job(status=Job.Status.APPROVED, printer=printer)
+        with self.assertRaisesMessage(SlicerNotConfigured, 'printer "A1"'):
+            slice_to_3mf(job)
+
+    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json')
+    def test_job_without_printer_uses_env(self):
+        command = self.slice(self.make_job(status=Job.Status.APPROVED))
+        self.assertEqual(command[command.index('--load-settings') + 1], 'env-m.json;env-p.json')
+
+
+class PrinterDispatchTests(DispatchTestBase):
+    def setUp(self):
+        self.p1 = Printer.objects.create(name='X1C', bambuddy_printer_id=4)
+        self.p2 = Printer.objects.create(name='P1S', bambuddy_printer_id=9)
+
+    @mock.patch('jobs.bambuddy.enqueue', return_value='55')
+    @mock.patch('jobs.bambuddy.upload_file', return_value='9')
+    def test_dispatch_uses_the_jobs_bambuddy_printer(self, _upload, enqueue):
+        self.sliced(printer=self.p2)
+        dispatch_claimed_job(claim_next_dispatch())
+        enqueue.assert_called_once_with('9', 9)
+
+    @mock.patch('jobs.bambuddy.requests.request')
+    def test_enqueue_body_uses_given_printer_id(self, request):
+        request.return_value = mock.Mock(status_code=200, content=b'{"id": 3}')
+        request.return_value.json.return_value = {'id': 3}
+        bambuddy.enqueue('9', 4)
+        self.assertEqual(
+            request.call_args.kwargs['json'],
+            {'library_file_id': 9, 'printer_id': 4, 'manual_start': True},
+        )
+
+    @mock.patch('jobs.bambuddy.start_item')
+    def test_release_is_per_printer(self, release):
+        a = self.dispatched(printer=self.p1, bambuddy_queue_id='81')
+        b = self.dispatched(printer=self.p2, bambuddy_queue_id='82')
+        self.client.force_login(self.teacher)
+        page = self.client.get(reverse('queue'))
+        self.assertContains(page, 'Plate cleared on X1C, release next')
+        self.assertContains(page, 'Plate cleared on P1S, release next')
+        self.client.post(reverse('queue-release-next'), {'printer': self.p2.pk})
+        release.assert_called_once_with('82')
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertIsNone(a.released_at)
+        self.assertIsNotNone(b.released_at)
+
+    @mock.patch('jobs.bambuddy.start_item')
+    def test_release_picks_oldest_staged_on_that_printer_only(self, release):
+        self.dispatched(printer=self.p1, bambuddy_queue_id='90',
+                        dispatched_at=timezone.now() - timedelta(minutes=9))
+        self.dispatched(printer=self.p2, bambuddy_queue_id='91',
+                        dispatched_at=timezone.now() - timedelta(minutes=5))
+        self.dispatched(printer=self.p2, bambuddy_queue_id='92')
+        self.client.force_login(self.teacher)
+        self.client.post(reverse('queue-release-next'), {'printer': self.p2.pk})
+        release.assert_called_once_with('91')
+
+    @mock.patch('jobs.bambuddy.start_item')
+    def test_jobs_without_printer_still_release_with_no_printer_field(self, release):
+        self.dispatched(bambuddy_queue_id='70')
+        self.client.force_login(self.teacher)
+        self.assertContains(self.client.get(reverse('queue')), 'Plate cleared, release next')
+        self.client.post(reverse('queue-release-next'))
+        release.assert_called_once_with('70')
+
+    def test_release_unknown_printer_is_an_error(self):
+        self.client.force_login(self.teacher)
+        response = self.client.post(reverse('queue-release-next'), {'printer': '999'}, follow=True)
+        self.assertContains(response, 'no longer exists')
+
+    def test_queue_page_shows_printer_column(self):
+        self.dispatched(printer=self.p1)
+        self.client.force_login(self.student)
+        self.assertContains(self.client.get(reverse('queue')), '<td>X1C</td>', html=False)

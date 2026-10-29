@@ -10,8 +10,8 @@ from accounts.permissions import classes_visible_to, staff_required
 from attachments.models import Attachment
 
 from .bambuddy import BambuddyError, BambuddyNotConfigured
-from .dispatch import next_staged_job, release_next, retry_dispatch
-from .models import Job
+from .dispatch import next_staged_jobs, release_next, retry_dispatch
+from .models import Job, Printer
 from .services import approve_job, jobs_visible_to, reject_job
 
 
@@ -40,26 +40,35 @@ def attachment_export(request, pk):
 def queue(request):
     jobs = Job.objects.filter(
         status__in=[Job.Status.QUEUED, Job.Status.WORKING],
-    ).select_related('user', 'attachment').order_by('approved_at')
+    ).select_related('user', 'attachment', 'printer').order_by('approved_at')
     return render(request, 'jobs/queue.html', {
         'jobs': jobs,
-        'next_staged': next_staged_job() if request.user.is_staff else None,
+        'next_staged': next_staged_jobs() if request.user.is_staff else [],
     })
 
 
 @staff_required
 @require_POST
 def queue_release_next(request):
-    """Staff confirm the plate is clear; Bambuddy starts the next staged job."""
+    """Staff confirm one printer's plate is clear; Bambuddy starts that
+    printer's next staged job."""
+    chosen = request.POST.get('printer', '')
+    printer = None
+    if chosen:
+        printer = Printer.objects.filter(pk=chosen).first() if chosen.isdigit() else None
+        if printer is None:
+            messages.error(request, 'That printer no longer exists.')
+            return redirect('queue')
     try:
-        job = release_next()
+        job = release_next(printer)
     except (BambuddyError, BambuddyNotConfigured) as exc:
         messages.error(request, f'Could not release the next job: {exc}')
         return redirect('queue')
     if job is None:
         messages.error(request, 'No job is waiting for the plate to be cleared.')
     else:
-        messages.success(request, f'Released "{job.attachment.name}" to the printer.')
+        where = f' on {job.printer.name}' if job.printer_id else ''
+        messages.success(request, f'Released "{job.attachment.name}"{where}.')
     return redirect('queue')
 
 
@@ -68,7 +77,7 @@ def review(request):
     classes = list(classes_visible_to(request.user))
     selected = request.GET.get('classroom', '')
     jobs = jobs_visible_to(request.user).select_related(
-        'user', 'attachment', 'classroom',
+        'user', 'attachment', 'classroom', 'printer',
     ).order_by('-created_at')
     if selected == 'none' and request.user.is_superuser:
         jobs = jobs.filter(classroom__isnull=True)
@@ -80,6 +89,7 @@ def review(request):
     return render(request, 'jobs/review.html', {
         'jobs': jobs,
         'classes': classes,
+        'printers': list(Printer.objects.filter(is_active=True)),
         'selected_classroom': selected,
         'auto_refresh': any(
             job.slicing_state in ('waiting', 'slicing')
@@ -103,11 +113,20 @@ def _back_to_review(request):
 @require_POST
 def review_approve(request, pk):
     job = get_object_or_404(jobs_visible_to(request.user), pk=pk)
-    if approve_job(job):
+    printer = None
+    if Printer.objects.filter(is_active=True).exists():
+        chosen = request.POST.get('printer', '')
+        if chosen.isdigit():
+            printer = Printer.objects.filter(pk=chosen, is_active=True).first()
+        if printer is None:
+            messages.error(request, f'Choose a printer for job #{job.id}.')
+            return _back_to_review(request)
+    if approve_job(job, printer):
+        where = f' for {printer.name}' if printer else ''
         messages.success(
             request,
-            f'Job #{job.id} approved. It is being sliced and will join the print '
-            'queue when ready.',
+            f'Job #{job.id} approved{where}. It is being sliced and will join the '
+            'print queue when ready.',
         )
     else:
         messages.error(request, f'Job #{job.id} can no longer be approved or retried.')

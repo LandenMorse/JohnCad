@@ -10,6 +10,43 @@ def job_sliced_file_upload_path(instance, filename):
 job_gcode_upload_path = job_sliced_file_upload_path
 
 
+class Printer(models.Model):
+    """A physical printer a teacher can send a job to.
+
+    Registered in Bambuddy first (IP, serial, access code live there); this row
+    only links JohnCad's name for it to Bambuddy's printer id and says which
+    OrcaSlicer presets slice for it, since a sliced file only prints on the
+    printer model it was sliced for.
+    """
+    name = models.CharField(max_length=100, unique=True)
+    bambuddy_printer_id = models.PositiveIntegerField(
+        help_text="Bambuddy's id for this printer (GET /api/v1/printers/ on Bambuddy).",
+    )
+    slicer_settings = models.CharField(
+        max_length=1000,
+        blank=True,
+        help_text=(
+            'Semicolon-separated machine + process preset .json paths for this '
+            'printer (OrcaSlicer --load-settings). Blank = use ORCA_SLICER_SETTINGS.'
+        ),
+    )
+    slicer_filaments = models.CharField(
+        max_length=1000,
+        blank=True,
+        help_text='Semicolon-separated filament preset .json path(s). Optional.',
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Untick to stop offering this printer to teachers (keeps job history).',
+    )
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class Job(models.Model):
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'
@@ -36,6 +73,16 @@ class Job(models.Model):
     classroom = models.ForeignKey(
         'accounts.Classroom',
         on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='jobs',
+    )
+    # Chosen by the teacher when approving; decides the slicer presets and which
+    # Bambuddy printer the job goes to. Null for jobs made before printers
+    # existed, or when no printers are set up (then the .env settings apply).
+    printer = models.ForeignKey(
+        Printer,
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name='jobs',

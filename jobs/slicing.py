@@ -22,6 +22,26 @@ class SlicingFailed(Exception):
 OUTPUT_NAME = 'output.gcode.3mf'
 
 
+def _presets_for(job):
+    """(machine+process presets, filament presets) to slice `job` with.
+
+    A printer with its own presets uses only those. One without (or a job with
+    no printer) falls back to the ORCA_SLICER_* settings as a pair, so a
+    printer's machine preset is never mixed with another printer's filaments.
+    """
+    printer = job.printer
+    if printer is not None and printer.slicer_settings:
+        return printer.slicer_settings, printer.slicer_filaments
+    if not settings.ORCA_SLICER_SETTINGS:
+        if printer is not None:
+            raise SlicerNotConfigured(
+                f'No slicer presets for printer "{printer.name}": set them on the '
+                'printer in /admin/ (or set ORCA_SLICER_SETTINGS).'
+            )
+        raise SlicerNotConfigured('ORCA_SLICER_SETTINGS is not set (machine/process presets).')
+    return settings.ORCA_SLICER_SETTINGS, settings.ORCA_SLICER_FILAMENTS
+
+
 def slice_to_3mf(job):
     """
     Slice job.attachment's .stl via the OrcaSlicer CLI into a .gcode.3mf and
@@ -34,8 +54,7 @@ def slice_to_3mf(job):
     --help; confirm on the Pi that the result prints when hand-uploaded to
     Bambuddy (docs/BAMBUDDY_PLAN.md, build order step 1).
     """
-    if not settings.ORCA_SLICER_SETTINGS:
-        raise SlicerNotConfigured('ORCA_SLICER_SETTINGS is not set (machine/process presets).')
+    presets, filaments = _presets_for(job)
     base_command = shlex.split(settings.ORCA_SLICER_CMD)
     if not base_command:
         raise SlicerNotConfigured('ORCA_SLICER_CMD is empty.')
@@ -52,10 +71,10 @@ def slice_to_3mf(job):
             '--slice', '0',
             '--outputdir', tmp_dir,
             '--export-3mf', OUTPUT_NAME,
-            '--load-settings', settings.ORCA_SLICER_SETTINGS,
+            '--load-settings', presets,
         ]
-        if settings.ORCA_SLICER_FILAMENTS:
-            command += ['--load-filaments', settings.ORCA_SLICER_FILAMENTS]
+        if filaments:
+            command += ['--load-filaments', filaments]
         if settings.ORCA_SLICER_DATADIR:
             command += ['--datadir', settings.ORCA_SLICER_DATADIR]
         command.append(stl_path)

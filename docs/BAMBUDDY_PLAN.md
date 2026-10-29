@@ -111,8 +111,9 @@ running instance:
 2. Script one upload and enqueue to one hardcoded printer.
 3. Add `dispatch_worker` and the model fields. *(done in code)*
 4. Add the webhook and status sync. *(done in code)*
-5. Add the bed-clear button *(done in code)*, then multi-printer and model
-   routing.
+5. Add the bed-clear button *(done in code)*, then multi-printer: a `Printer`
+   model with per-printer slicer presets, chosen by the teacher on `/review/`
+   *(done in code)*. Automatic "any X1C" routing is not done.
 
 ## Repo cleanup before open-sourcing
 
