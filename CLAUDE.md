@@ -1,14 +1,13 @@
 # JohnCad
 
-Django CMS for a 3D-printing pipeline: Students upload `.stl` files, get them
-sliced into G-code, request prints, and an Arduino UNO R4 WiFi controller at
-the printers fulfills approved print jobs via microSD card transfer.
-
-Two different boards show up in this project — don't conflate them: the
-**JohnCad server** (Django + Postgres) runs on a Raspberry Pi; the
-**printer controller** at the printers is a separate Arduino UNO R4 WiFi,
-not a Pi. See `PRINTER_CONTROLLER_API.md` for the controller's firmware-side
-API contract.
+Django CMS for a 3D-printing pipeline: Students upload `.stl` files,
+request prints, teachers approve them, OrcaSlicer slices them to
+`.gcode.3mf`, and JohnCad dispatches them to Bambu printers through a
+self-hosted **Bambuddy** on the same Raspberry Pi. Django never talks to
+printers, only to Bambuddy's REST API; Bambuddy reports print status back via
+a webhook. The old Arduino/microSD printer controller has been removed. Plan,
+network setup (GL.iNet router + Tailscale subnet route to the school
+printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 
 ## Current state (implemented)
 
@@ -17,8 +16,8 @@ API contract.
   `django.contrib.auth.User`).
 - Three Django apps, split by feature: `accounts` (Student identity, classes,
   signup codes; depends on no other app),
-  `attachments` (raw `.stl` upload), `jobs` (the print pipeline + printer
-  controller API). Dependency direction is one-way — `jobs` imports from `attachments`
+  `attachments` (raw `.stl` upload), `jobs` (the print pipeline + Bambuddy
+  dispatch and webhook). Dependency direction is one-way — `jobs` imports from `attachments`
   (the `Job.attachment` FK, and the `attachment_export` view), never the
   reverse, aside from `attachments`'s home view doing one read-only `Job`
   query for its "My Jobs" table. Shared page layout lives at project-level
@@ -28,7 +27,8 @@ API contract.
   mounted at a public URL, only reachable through authenticated views).
 - `Job` model (`jobs/models.py`): one specific request to print a
   Student's `Attachment`. Status lifecycle: `pending -> approved -> queued ->
-  working -> finished`, plus `rejected` (terminal, from `pending`). See table
+  working -> finished`, plus `rejected` (terminal, from `pending`) and
+  `failed` (print failed in Bambuddy; teacher Retry re-queues it). See table
   below for who/what sets each status.
 - Session-based login/logout (`accounts` app). **Code-gated signup** at
   `/signup/`: a teacher creates a `Classroom` ("Class" in the UI) at
@@ -64,9 +64,10 @@ API contract.
   it). `AttachmentAdmin` lives in
   `attachments/admin.py`; the `User` re-registration lives in
   `accounts/admin.py`.
-- **Slicing** (`jobs/slicing.py`): `slice_to_gcode(job)` shells out to
-  the OrcaSlicer CLI (`subprocess.run`, no `shell=True`) to convert the
-  attachment's `.stl` into `job.gcode`. OrcaSlicer is a **Flatpak on the Pi**
+- **Slicing** (`jobs/slicing.py`): `slice_to_3mf(job)` shells out to
+  the OrcaSlicer CLI (`subprocess.run`, no `shell=True`, `--export-3mf`) to
+  convert the attachment's `.stl` into a `.gcode.3mf` in `job.sliced_file`
+  (renamed from `gcode` in migration 0004). OrcaSlicer is a **Flatpak on the Pi**
   (`ORCA_SLICER_CMD`, default `flatpak run com.orcaslicer.OrcaSlicer`) and must
   run on the host, not in the `web` container. Config via settings/env:
   `ORCA_SLICER_SETTINGS` (machine+process preset JSONs, `;`-separated,
@@ -76,21 +77,46 @@ API contract.
   private `/tmp`; the sandbox needs `flatpak override --filesystem=` for
   `MEDIA_ROOT` and the preset dir. Raises `SlicerNotConfigured` if settings are
   blank or the command isn't found, `SlicingFailed` (with captured
-  stderr) on non-zero exit/timeout/no `.gcode` output — both caught and
-  surfaced by the admin approve action. **Unverified on the Pi** (flags taken
+  stderr) on non-zero exit/timeout/no `.3mf` output — both caught by the
+  slice worker and stored in `slicing_error`. **Unverified on the Pi** (flags taken
   from `--help`, not yet run end-to-end).
 - Public **`/queue/`** page (`jobs` app; any logged-in Student, not just
   admins) lists `queued`/`working` jobs — attachment name, username, status.
-- DRF token-authenticated printer controller API (`jobs/api_urls.py`,
-  `jobs/api_views.py`), built around `Job`, mounted at `/api/`:
-  - `GET /api/jobs/queue/` — `queued` jobs, FIFO by `approved_at`.
-  - `GET /api/jobs/<id>/gcode/` — streams the job's G-code.
-  - `POST /api/jobs/<id>/working/` — `queued -> working` (409 if not queued).
-  - `POST /api/jobs/<id>/finished/` — `working -> finished` (409 if not working).
-  Full contract + example requests/polling loop in `PRINTER_CONTROLLER_API.md`.
-- Dockerized (Dockerfile, docker-compose with `db`/`web`/`nginx`,
+- Staff see a **Plate cleared, release next** button on `/queue/` that asks
+  Bambuddy to start the oldest staged job's queue item
+  (`dispatch.release_next` -> `POST /queue/<id>/start`).
+- **Dispatch** (`jobs/dispatch.py`, `dispatch_worker` command, run as the
+  `johncad-dispatcher` systemd service): claims sliced `queued` jobs with no
+  `bambuddy_queue_id`, uploads the file as `johncad-job-<id>.gcode.3mf`,
+  enqueues it staged ("Queue Only") on `BAMBUDDY_PRINTER_ID`, stores
+  `bambuddy_file_id`/`bambuddy_queue_id`/`dispatched_at`. Errors go in
+  `dispatch_error`, shown on `/review/` with a Retry button. The worker also
+  polls each in-flight job's queue item (`GET /queue/<id>`) every 60s as a
+  fallback for missed webhooks.
+- **Bambuddy client** (`jobs/bambuddy.py`): every Bambuddy API detail lives
+  here as constants, checked against Bambuddy's source (commit `98ecaf5`,
+  2026-10-22), not yet against a running instance. Base `/api/v1`, key in
+  `X-API-Key`; upload `POST /library/files/` (multipart `file`, returns
+  `id`); enqueue `POST /queue/` with `library_file_id`, `printer_id`,
+  `manual_start`; release `POST /queue/<id>/start`; queue item status
+  `pending|printing|completed|failed|skipped|cancelled`. Key permissions:
+  Manage library, Add to queue, Read status.
+- **Webhook** `POST /api/bambuddy/webhook/` (`jobs/api_views.py`, plain
+  Django view; DRF was removed with the Arduino API): shared secret
+  (`BAMBUDDY_WEBHOOK_SECRET`, as `Authorization: Bearer` from Bambuddy's
+  webhook "Auth header" setting, or `?secret=`). Bambuddy's generic payload
+  is flat (`event`, `filename`, `printer`, `reason`, ...) with no
+  printer/archive/queue ids, so jobs are matched by `johncad-job-<id>` in
+  `filename` (Bambuddy strips `.gcode.3mf`). Maps
+  `print_start -> working`, `print_complete -> finished`,
+  `print_failed`/`print_stopped` -> `failed`; repeats are no-ops, invalid
+  transitions 409. Local-only: both nginx configs 404 `/api/`, and Bambuddy
+  (host networking) posts to gunicorn on `127.0.0.1:8000`.
+- Settings/env: `BAMBUDDY_URL` (default `http://127.0.0.1:8080`), `BAMBUDDY_API_KEY`, `BAMBUDDY_WEBHOOK_SECRET`,
+  `BAMBUDDY_PRINTER_ID`, `BAMBUDDY_STAGED` (default True), `BAMBUDDY_TIMEOUT`.
+- Dockerized (Dockerfile, docker-compose with `db`/`web`/`nginx`/`bambuddy`,
   `entrypoint.sh`) for deployment to a Raspberry Pi hosting the site +
-  Postgres.
+  Postgres + Bambuddy (`ghcr.io/maziggy/bambuddy`, port 8080, AGPL-3.0).
 
 ## Job status enum
 
@@ -98,22 +124,24 @@ API contract.
 |------------|-------------------------------------|---------|
 | `pending`  | Student (via Export click)          | Job created, awaiting admin review |
 | `approved` | Admin                               | Admin signed off; slicing attempted here |
-| `queued`   | System (auto, on slicing success)   | Gcode ready, FIFO in the active print queue, visible on the public queue page |
-| `working`  | Printer controller (via API)        | G-code exported to a microSD card |
-| `finished` | Printer controller (via API)        | microSD card returned after printing |
+| `queued`   | System (auto, on slicing success)   | `.gcode.3mf` ready; dispatched to Bambuddy, then staged until staff release it |
+| `working`  | Bambuddy webhook / poll             | Print started |
+| `finished` | Bambuddy webhook / poll             | Print completed |
+| `failed`   | Bambuddy webhook / poll             | Print failed or stopped; teacher Retry re-queues |
 | `rejected` | Admin                               | Declined instead of approved; terminal |
 
 ## Still open / not implemented
 
-- **Verify OrcaSlicer end-to-end on the Pi**: confirm the CLI invocation
-  works headless via Flatpak, the Flatpak filesystem overrides are in place,
-  and the preset paths in `ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` are
-  right (output is Bambu-flavored G-code; confirm it suits the microSD flow).
-- **Docker deployment**: `web` container can't slice (no Flatpak access); for
-  production run Django on the host with Postgres (and optionally nginx) in
-  Docker, and adjust `docker-compose.yml`/nginx upstream accordingly.
-- Whether `working`/`finished` API calls need any request body (e.g. an SD
-  card identifier) or stay bare state transitions — not needed yet, revisit
-  if the controller firmware ends up wanting to correlate cards to jobs
-  server-side instead of only locally.
-- No way to pull a job back out of the queue via API (only Django admin).
+- **Run the Bambuddy calls against a live instance**: they're checked
+  against Bambuddy's source only. Watch for the 409 that
+  `POST /queue/<id>/start` returns when Bambuddy thinks the spool is short.
+- **Hand-upload one `.gcode.3mf`** through Bambuddy's UI and print it, to
+  confirm OrcaSlicer's CLI 3MF output works on the printer model.
+- **Verify OrcaSlicer end-to-end on the Pi** (headless Flatpak, filesystem
+  overrides, preset paths).
+- Multi-printer and "any X1C"-style model routing (one hardcoded
+  `BAMBUDDY_PRINTER_ID` for now); release-next is per printer.
+- Pin the Bambuddy image version; pick one deployment path (the `web`
+  container still can't slice).
+- Repo cleanup before open-sourcing: LICENSE, quick-start, configurable
+  domain settings (see `docs/BAMBUDDY_PLAN.md`).

@@ -4,6 +4,11 @@
 # Router must forward TCP 80, 443 and 7000 to this machine.
 
 riponhighschoolprint.com {
+	# /api/ only holds Bambuddy's webhook, which Bambuddy posts straight to gunicorn
+	# on the school Pi (127.0.0.1:8000). It must never be reachable from the internet.
+	# (nginx/*.conf blocks it the same way; the tunnel bypasses nginx, so block it here.)
+	respond /api/* 404
+
 	request_body {
 		max_size 512MB          # keep in sync with DATA_UPLOAD_MAX_MEMORY_SIZE
 	}

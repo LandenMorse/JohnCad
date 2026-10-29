@@ -40,11 +40,12 @@ HTTPS_ENABLED=True
 site over HTTPS (Caddy), so session/CSRF cookies should be `Secure`. Then
 `sudo systemctl restart johncad`.
 
-## Printer controller
+## Bambuddy
 
-The Arduino firmware talks to the API at a hardcoded host (the README mentions
-`rhsprint.crabdance.com`). If you switch domains, update the firmware's host. It will
-verify the Let's Encrypt cert Caddy obtains, so no other change is needed.
+Bambuddy runs on the school Pi next to JohnCad and talks to the printers and to
+gunicorn locally (`127.0.0.1`), so none of that traffic goes through the tunnel. The
+Caddyfile returns 404 for `/api/*` so Bambuddy's webhook endpoint stays private. See the
+main README's "Bambuddy setup" and `docs/BAMBUDDY_PLAN.md`.
 
 ## Troubleshooting
 
