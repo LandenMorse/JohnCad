@@ -136,7 +136,7 @@ def release_next():
     job = next_staged_job()
     if job is None:
         return None
-    bambuddy.release_next()
+    bambuddy.start_item(job.bambuddy_queue_id)
     Job.objects.filter(pk=job.pk).update(released_at=timezone.now())
     return job
 
@@ -158,34 +158,29 @@ def apply_event(job, event, detail=''):
     return APPLIED
 
 
-def find_job_for_webhook(job_id, archive_id):
-    """The in-flight job a webhook is about: by the job id in the uploaded
-    filename if present, else the oldest in-flight job with that file id."""
-    in_flight = Job.objects.filter(
+def find_job_for_webhook(job_id):
+    """The dispatched job a webhook is about, by the job id Bambuddy echoes
+    back in the print's filename."""
+    return Job.objects.filter(
+        pk=job_id,
         status__in=[Job.Status.QUEUED, Job.Status.WORKING, Job.Status.FINISHED, Job.Status.FAILED],
-    ).exclude(bambuddy_queue_id='')
-    if job_id is not None:
-        return in_flight.filter(pk=job_id).first()
-    if archive_id is not None:
-        return in_flight.filter(bambuddy_file_id=archive_id).order_by(
-            'dispatched_at', 'id',
-        ).first()
-    return None
+    ).exclude(bambuddy_queue_id='').first()
 
 
 def sync_from_bambuddy():
     """Polling fallback for missed webhooks: apply what Bambuddy's queue says
     about every in-flight job. Returns how many jobs changed."""
-    jobs = list(
+    jobs = (
         Job.objects.filter(status__in=[Job.Status.QUEUED, Job.Status.WORKING])
         .exclude(bambuddy_queue_id='')
     )
-    if not jobs:
-        return 0
-    events = bambuddy.queue_events()
     changed = 0
     for job in jobs:
-        event = events.get(job.bambuddy_queue_id)
+        event = bambuddy.queue_item_event(job.bambuddy_queue_id)
+        if event == 'missing':
+            logger.warning('Job #%s: Bambuddy queue item %s no longer exists.',
+                           job.id, job.bambuddy_queue_id)
+            continue
         if event is None:
             continue
         # A missed "started" means a completed job may still be queued here.

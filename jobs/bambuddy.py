@@ -1,13 +1,15 @@
 """Thin client for the self-hosted Bambuddy REST API.
 
-Django never talks to printers; everything goes through Bambuddy. Every
-Bambuddy-specific detail (paths, field names, header names, status values)
-is kept in this module so it can be corrected in one place.
+Django never talks to printers; everything goes through Bambuddy, which runs
+on the same host. Every Bambuddy-specific detail (paths, field names, header
+names, status values) is kept in this module so it can be corrected in one
+place.
 
-UNVERIFIED: the constants marked TODO(verify) come from Bambuddy's wiki
-(wiki.bambuddy.cool, "API reference" / "API keys" pages), not from running it.
-Before relying on dispatch, open Bambuddy's built-in API browser on the Pi
-(<BAMBUDDY_URL>/docs) and confirm each one; see docs/BAMBUDDY_PLAN.md.
+Checked against Bambuddy's source (github.com/maziggy/bambuddy, commit
+98ecaf5, 2026-10-22): backend/app/api/routes/library.py and print_queue.py,
+schemas/library.py and print_queue.py, core/auth.py, and
+services/notification_service.py. Not yet checked against a running
+instance; Bambuddy's API browser is at <BAMBUDDY_URL>/docs.
 """
 import hmac
 import re
@@ -16,55 +18,54 @@ import requests
 from django.conf import settings
 
 API_PREFIX = '/api/v1'
-# Documented in the wiki's API-keys page (curl -H "X-API-Key: ...").
+# core/auth.py accepts X-API-Key or "Authorization: Bearer bb_...". The key
+# needs Bambuddy's "Manage Library" (upload), "Add to queue" (enqueue and
+# start a staged item) and "Read status" (polling) permissions.
 API_KEY_HEADER = 'X-API-Key'
 
-# TODO(verify): upload path, multipart field name and which response field
-# holds the new file's id. The wiki lists POST /library/files/upload but
-# documents no body or response.
-UPLOAD_PATH = '/library/files/upload'
+# POST /library/files/ takes a multipart "file" and returns
+# FileUploadResponse {"id", "filename", ...}.
+UPLOAD_PATH = '/library/files/'
 UPLOAD_FIELD = 'file'
-UPLOAD_ID_FIELDS = ('id', 'file_id', 'archive_id')
 
-# The wiki's documented queue body is {"archive_id", "printer_id",
-# "scheduled_time"}. TODO(verify): whether a library upload's id goes in
-# archive_id or another field, how "Queue Only"/manual start is requested
-# (QUEUE_STAGED_FIELD), and the response's id field.
-QUEUE_PATH = '/queue'
-QUEUE_FILE_FIELD = 'archive_id'
-QUEUE_STAGED_FIELD = 'manual_start'
-QUEUE_ID_FIELDS = ('id', 'queue_id')
+# POST /queue/ takes PrintQueueItemCreate: either archive_id or
+# library_file_id, plus printer_id and manual_start ("staged": the item waits
+# for POST /queue/{id}/start). Returns PrintQueueItemResponse {"id", ...}.
+QUEUE_PATH = '/queue/'
+QUEUE_ITEM_PATH = '/queue/{item_id}'
+START_PATH = '/queue/{item_id}/start'
 
-# Documented: "Start the next pending job in this printer's queue, releasing
-# it if it waits for a manual start". Per-printer, not per-item.
-RELEASE_PATH = '/webhook/printer/{printer_id}/start'
-
-# Polling fallback: no GET /queue/<id> is documented, only a filtered list.
-# TODO(verify): the API's status values.
+# PrintQueueItem.status: pending, printing, completed, failed, skipped,
+# cancelled. Used by the polling fallback; "pending" maps to no event.
 QUEUE_STATUS_EVENTS = {
     'printing': 'started',
     'completed': 'completed',
     'failed': 'failed',
+    'skipped': 'failed',
     'cancelled': 'failed',
 }
 
-# Outgoing webhooks (Settings > Notifications). Documented payload:
-# {"event": "print_complete", "data": {"printer_id", "archive_id", "status", ...}}
-# There is no queue item id and no signing, so jobs are matched on the
-# uploaded filename (which carries the job id, see upload_name) and then on
-# archive_id; the shared secret travels in the URL or a header.
+# Outgoing webhook (Settings > Notifications, provider "Webhook", payload
+# format "generic"). The payload is flat:
+#   {"title", "message", "timestamp", "source": "Bambuddy",
+#    "event": "print_complete", "printer", "filename", "reason", ...}
+# There is no printer id, archive id or queue item id. "filename" is the
+# print's subtask name, which Bambuddy derives from the library filename with
+# ".gcode"/".3mf" stripped, so jobs are matched on the job id carried in the
+# uploaded filename (see upload_name).
 WEBHOOK_EVENTS = {
-    'print_started': 'started',
+    'print_start': 'started',
     'print_complete': 'completed',
     'print_failed': 'failed',
     'print_stopped': 'failed',
 }
-WEBHOOK_SECRET_HEADER = 'X-Webhook-Secret'
+# Bambuddy's webhook "Auth header" setting is sent as
+# "Authorization: Bearer <value>"; ?secret= in the URL also works.
 WEBHOOK_SECRET_PARAM = 'secret'
 
 
 UPLOAD_NAME = 'johncad-job-{job_id}.gcode.3mf'
-_UPLOAD_NAME_RE = re.compile(r'johncad-job-(\d+)\.gcode\.3mf')
+_JOB_NAME_RE = re.compile(r'\bjohncad-job-(\d+)\b')
 
 
 def upload_name(job_id):
@@ -88,7 +89,7 @@ def _url(path):
 def _printer_id():
     if not settings.BAMBUDDY_PRINTER_ID:
         raise BambuddyNotConfigured('BAMBUDDY_PRINTER_ID is not set.')
-    return settings.BAMBUDDY_PRINTER_ID
+    return _as_int(settings.BAMBUDDY_PRINTER_ID)
 
 
 def _request(method, path, **kwargs):
@@ -115,83 +116,78 @@ def _request(method, path, **kwargs):
         raise BambuddyError(f'Bambuddy {method} {path} returned non-JSON: {response.text[:200]}') from exc
 
 
-def _pick_id(data, fields, what):
-    for field in fields:
-        if isinstance(data, dict) and data.get(field) not in (None, ''):
-            return str(data[field])
-    raise BambuddyError(f'Bambuddy {what} response has no id ({", ".join(fields)}): {data!r}'[:500])
+def _id(data, what):
+    if isinstance(data, dict) and data.get('id') not in (None, ''):
+        return str(data['id'])
+    raise BambuddyError(f'Bambuddy {what} response has no id: {data!r}'[:500])
 
 
 def upload_file(fileobj, filename):
-    """Upload a sliced .gcode.3mf. Returns Bambuddy's id for it."""
+    """Upload a sliced .gcode.3mf to Bambuddy's library. Returns its file id."""
     data = _request('POST', UPLOAD_PATH, files={UPLOAD_FIELD: (filename, fileobj)})
-    return _pick_id(data, UPLOAD_ID_FIELDS, 'upload')
+    return _id(data, 'upload')
 
 
 def enqueue(file_id):
-    """Add an uploaded file to the printer's queue. Returns the queue item id.
-
-    With BAMBUDDY_STAGED the item waits for release_next() (bed clear).
+    """Add an uploaded library file to the printer's queue. Returns the queue
+    item id. With BAMBUDDY_STAGED the item waits for start_item() (bed clear).
     """
-    body = {QUEUE_FILE_FIELD: _as_int(file_id), 'printer_id': _as_int(_printer_id())}
-    if settings.BAMBUDDY_STAGED:
-        body[QUEUE_STAGED_FIELD] = True
-    data = _request('POST', QUEUE_PATH, json=body)
-    return _pick_id(data, QUEUE_ID_FIELDS, 'queue')
+    body = {
+        'library_file_id': _as_int(file_id),
+        'printer_id': _printer_id(),
+        'manual_start': bool(settings.BAMBUDDY_STAGED),
+    }
+    return _id(_request('POST', QUEUE_PATH, json=body), 'queue')
 
 
-def release_next():
-    """Tell Bambuddy the plate is clear: start the printer's next waiting item."""
-    _request('POST', RELEASE_PATH.format(printer_id=_printer_id()))
+def start_item(queue_id):
+    """Release a staged queue item: the plate is clear, print it next.
+
+    Bambuddy answers 409 if the loaded spool looks short on filament, and 400
+    if the item is no longer pending; both surface as BambuddyError.
+    """
+    _request('POST', START_PATH.format(item_id=queue_id))
 
 
-def queue_events():
-    """Polling fallback: {queue item id: 'started'|'completed'|'failed'} for
-    the printer's queue items whose status maps to an event."""
-    data = _request('GET', QUEUE_PATH, params={'printer_id': _printer_id()})
-    items = data.get('items', []) if isinstance(data, dict) else data
-    events = {}
-    for item in items or []:
-        if not isinstance(item, dict) or item.get('id') is None:
-            continue
-        event = QUEUE_STATUS_EVENTS.get(str(item.get('status', '')).lower())
-        if event:
-            events[str(item['id'])] = event
-    return events
+def queue_item_event(queue_id):
+    """Polling fallback: 'started'/'completed'/'failed' for a queue item's
+    current status, None while it's pending, or 'missing' if Bambuddy no
+    longer has it."""
+    try:
+        data = _request('GET', QUEUE_ITEM_PATH.format(item_id=queue_id))
+    except BambuddyError as exc:
+        if ' returned 404:' in str(exc):
+            return 'missing'
+        raise
+    return QUEUE_STATUS_EVENTS.get(str(data.get('status', '')).lower())
 
 
 def webhook_secret_ok(request):
     expected = settings.BAMBUDDY_WEBHOOK_SECRET
     if not expected:
         return False
-    given = request.headers.get(WEBHOOK_SECRET_HEADER) or request.GET.get(WEBHOOK_SECRET_PARAM, '')
+    auth = request.headers.get('Authorization', '')
+    given = auth[len('Bearer '):] if auth.startswith('Bearer ') else request.GET.get(WEBHOOK_SECRET_PARAM, '')
     return hmac.compare_digest(given.encode(), expected.encode())
 
 
 def parse_webhook(payload):
-    """Returns a dict with event ('started'/'completed'/'failed'), job_id
-    (from the filename, or None), archive_id (or None) and detail, or None if
-    the payload isn't a print event JohnCad tracks."""
+    """Returns {'event': 'started'|'completed'|'failed', 'job_id', 'detail'},
+    or None if the payload isn't a print event for a JohnCad job."""
     if not isinstance(payload, dict):
         return None
     event = WEBHOOK_EVENTS.get(payload.get('event'))
-    data = payload.get('data')
-    if event is None or not isinstance(data, dict):
+    if event is None:
         return None
-    match = _UPLOAD_NAME_RE.search(str(data.get('filename') or ''))
-    archive_id = data.get('archive_id')
-    if match is None and archive_id in (None, ''):
+    match = _JOB_NAME_RE.search(str(payload.get('filename') or ''))
+    if match is None:
         return None
-    # print_complete carries data.status; anything but success is a failure.
-    status = str(data.get('status') or 'success').lower()
-    if event == 'completed' and status not in ('success', 'completed'):
-        event = 'failed'
-    return {
-        'event': event,
-        'job_id': int(match.group(1)) if match else None,
-        'archive_id': None if archive_id in (None, '') else str(archive_id),
-        'detail': f'Bambuddy reported {payload.get("event")} ({status}).' if event == 'failed' else '',
-    }
+    detail = ''
+    if event == 'failed':
+        reason = payload.get('reason')
+        detail = f'Bambuddy reported {payload["event"]}'
+        detail += f': {reason}.' if reason and reason != 'Unknown' else '.'
+    return {'event': event, 'job_id': int(match.group(1)), 'detail': detail}
 
 
 def _as_int(value):

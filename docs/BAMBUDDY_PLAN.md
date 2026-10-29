@@ -33,7 +33,7 @@ Django never talks to printers, only to Bambuddy.
 
 ## Code changes in JohnCad
 
-Status: implemented on branch `claude/bambuddy-dispatch-hx3ux3` unless noted.
+Status: implemented on branch `claude/bambuddy-integration-ok9pdr` unless noted.
 
 1. **Slicer output** — `jobs/slicing.py` `slice_to_3mf()` passes
    `--export-3mf` and stores the result in `Job.sliced_file` (renamed from
@@ -47,10 +47,10 @@ Status: implemented on branch `claude/bambuddy-dispatch-hx3ux3` unless noted.
    Logic in `jobs/dispatch.py`. Runs as the `johncad-dispatcher` systemd unit
    (README "Dispatch worker").
 4. **Webhook** — `POST /api/bambuddy/webhook/` (`jobs/api_views.py`):
-   shared-secret check, idempotent, `print_started` → `working`,
-   `print_complete` → `finished`, `print_failed`/`print_stopped` (or a
-   non-success complete) → `failed`. Invalid transitions return 409. The
-   dispatch worker polls Bambuddy's queue every 60s as a fallback.
+   shared-secret check, idempotent, `print_start` → `working`,
+   `print_complete` → `finished`, `print_failed`/`print_stopped` → `failed`.
+   Invalid transitions return 409. The dispatch worker polls each job's
+   Bambuddy queue item every 60s as a fallback.
 5. **Env vars** — `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`,
    `BAMBUDDY_WEBHOOK_SECRET`, plus `BAMBUDDY_PRINTER_ID`, `BAMBUDDY_STAGED`,
    `BAMBUDDY_TIMEOUT` (`.env.example`).
@@ -62,42 +62,48 @@ Status: implemented on branch `claude/bambuddy-dispatch-hx3ux3` unless noted.
 8. **Removed** — `firmware/`, the `/api/jobs/...` endpoints, DRF and its
    token auth, `PRINTER_CONTROLLER_API.md`.
 
-## Bambuddy facts
+## Bambuddy API facts
 
-From the Bambuddy wiki (wiki.bambuddy.cool) and repo, not yet from running it:
+Checked against Bambuddy's source (github.com/maziggy/bambuddy, commit
+`98ecaf5`, 2026-10-22; changelog's latest release 1.2.5.7), not yet against a
+running instance:
 
-- License: **AGPL-3.0** (repo `LICENSE`).
-- API base `/api/v1`; key sent as `X-API-Key`. Key permissions are toggles
-  (Read Status, Manage Queue, Control Printer, Manage Library, …), not a
-  `can_queue` scope. A built-in interactive API browser is available.
-- `POST /queue` documented body: `{"archive_id", "printer_id", "scheduled_time"}`.
-- `POST /webhook/printer/{id}/start` starts the printer's next pending item,
-  releasing one waiting for manual start (needs Control Printer).
-- `GET /queue?printer_id=&status=` lists queue items (no per-item GET).
-- Outgoing webhooks (Settings > Notifications): `{"event": "print_complete",
-  "timestamp", "data": {"printer_id", "printer_name", "archive_id",
-  "filename", "duration", "status"}}`; events `print_started`,
-  `print_progress`, `print_complete`, `print_failed`, `print_stopped`,
-  `printer_offline`, `printer_error`. No signature and no queue item id, so
-  JohnCad names uploads `johncad-job-<id>.gcode.3mf` and matches webhooks on
-  that filename, then on `archive_id`.
-- Docker image `ghcr.io/maziggy/bambuddy`, port 8000 by default
-  (`PORT` env), host networking on Linux.
+- License: **AGPL-3.0**. JohnCad only calls its HTTP API, so it isn't
+  affected.
+- API base `/api/v1`. Key sent as `X-API-Key` (or `Authorization: Bearer
+  bb_...`). JohnCad's key needs **Manage library** (upload), **Add to queue**
+  (enqueue and start) and **Read status** (polling). Not Control Printer.
+- Upload: `POST /library/files/`, multipart field `file`, response
+  `{"id", "filename", "file_type", "file_size", "duplicate_of", ...}`.
+- Enqueue: `POST /queue/` with `{"library_file_id", "printer_id",
+  "manual_start"}` (the body also takes `archive_id` instead of
+  `library_file_id`, `target_model`, `scheduled_time`, `plate_id`,
+  `ams_mapping`, ...). Response is the queue item with `id`.
+- Release: `POST /queue/{id}/start` clears `manual_start` on one item. 400 if
+  it's no longer pending, 409 if Bambuddy thinks the spool is short (retry
+  with `?skip_filament_check=true`; JohnCad just shows the error).
+- `GET /queue/{id}` returns one item; `status` is one of `pending`,
+  `printing`, `completed`, `failed`, `skipped`, `cancelled`.
+- Outgoing webhook (Settings > Notifications, provider **Webhook**, payload
+  format **generic**): a flat JSON body `{"title", "message", "timestamp",
+  "source": "Bambuddy", "event", "printer", "filename", ...}`. Events used:
+  `print_start`, `print_complete`, `print_failed`, `print_stopped` (each has
+  to be switched on for the provider). `filename` is the print's subtask
+  name: the library filename with `.gcode`/`.3mf` stripped, so a JohnCad
+  upload shows up as `johncad-job-<id>`. No printer, archive or queue id is
+  sent, so the job id in that name is what links the event to a job.
+  The provider's **Auth header** value is sent as `Authorization: Bearer
+  <value>`. Loopback URLs are allowed.
+- Docker image `ghcr.io/maziggy/bambuddy`, port 8000 by default (`PORT`
+  env), host networking on Linux, data in `/app/data` and `/app/logs`.
 
-## Unverified, check first
+## Still unverified
 
-Every guess lives in `jobs/bambuddy.py` as a `TODO(verify)` constant. Copy
-the real values from Bambuddy's API browser (`<BAMBUDDY_URL>/docs`):
-
-- File upload endpoint (`/library/files/upload`?), multipart field name, and
-  which response field is the id.
-- Whether an uploaded library file's id is what `POST /queue` wants as
-  `archive_id`, the queue response's id field, and how to request "Queue
-  Only" / manual start (`manual_start` is a guess).
-- Queue item status values used by the polling fallback.
-- Whether the webhook can send a custom header; if not, put the secret in the
-  URL (`?secret=`).
-- Whether Orca's CLI 3MF output prints unchanged on your printer model.
+- A live run: upload, enqueue, start, and the webhook arriving with the
+  expected `filename`.
+- Whether OrcaSlicer's CLI `.gcode.3mf` output prints unchanged on the
+  printer model.
+- Which image tag to pin (`BAMBUDDY_VERSION`, currently `latest`).
 
 ## Build order
 

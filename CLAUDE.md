@@ -83,27 +83,36 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 - Public **`/queue/`** page (`jobs` app; any logged-in Student, not just
   admins) lists `queued`/`working` jobs — attachment name, username, status.
 - Staff see a **Plate cleared, release next** button on `/queue/` that asks
-  Bambuddy to start the oldest staged job (`dispatch.release_next`).
+  Bambuddy to start the oldest staged job's queue item
+  (`dispatch.release_next` -> `POST /queue/<id>/start`).
 - **Dispatch** (`jobs/dispatch.py`, `dispatch_worker` command, run as the
   `johncad-dispatcher` systemd service): claims sliced `queued` jobs with no
   `bambuddy_queue_id`, uploads the file as `johncad-job-<id>.gcode.3mf`,
   enqueues it staged ("Queue Only") on `BAMBUDDY_PRINTER_ID`, stores
   `bambuddy_file_id`/`bambuddy_queue_id`/`dispatched_at`. Errors go in
   `dispatch_error`, shown on `/review/` with a Retry button. The worker also
-  polls Bambuddy's queue every 60s as a fallback for missed webhooks.
-- **Bambuddy client** (`jobs/bambuddy.py`): every Bambuddy API detail
-  (paths, `X-API-Key`, field names, status/event values) lives here as
-  constants; the ones marked `TODO(verify)` come from Bambuddy's wiki and
-  must be checked against its API browser before relying on dispatch.
+  polls each in-flight job's queue item (`GET /queue/<id>`) every 60s as a
+  fallback for missed webhooks.
+- **Bambuddy client** (`jobs/bambuddy.py`): every Bambuddy API detail lives
+  here as constants, checked against Bambuddy's source (commit `98ecaf5`,
+  2026-10-22), not yet against a running instance. Base `/api/v1`, key in
+  `X-API-Key`; upload `POST /library/files/` (multipart `file`, returns
+  `id`); enqueue `POST /queue/` with `library_file_id`, `printer_id`,
+  `manual_start`; release `POST /queue/<id>/start`; queue item status
+  `pending|printing|completed|failed|skipped|cancelled`. Key permissions:
+  Manage library, Add to queue, Read status.
 - **Webhook** `POST /api/bambuddy/webhook/` (`jobs/api_views.py`, plain
   Django view; DRF was removed with the Arduino API): shared secret
-  (`BAMBUDDY_WEBHOOK_SECRET`, header `X-Webhook-Secret` or `?secret=`),
-  matches jobs by the upload filename then `archive_id`, maps
-  `print_started -> working`, `print_complete -> finished`,
+  (`BAMBUDDY_WEBHOOK_SECRET`, as `Authorization: Bearer` from Bambuddy's
+  webhook "Auth header" setting, or `?secret=`). Bambuddy's generic payload
+  is flat (`event`, `filename`, `printer`, `reason`, ...) with no
+  printer/archive/queue ids, so jobs are matched by `johncad-job-<id>` in
+  `filename` (Bambuddy strips `.gcode.3mf`). Maps
+  `print_start -> working`, `print_complete -> finished`,
   `print_failed`/`print_stopped` -> `failed`; repeats are no-ops, invalid
   transitions 409. Local-only: both nginx configs 404 `/api/`, and Bambuddy
   (host networking) posts to gunicorn on `127.0.0.1:8000`.
-- Settings/env: `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`, `BAMBUDDY_WEBHOOK_SECRET`,
+- Settings/env: `BAMBUDDY_URL` (default `http://127.0.0.1:8080`), `BAMBUDDY_API_KEY`, `BAMBUDDY_WEBHOOK_SECRET`,
   `BAMBUDDY_PRINTER_ID`, `BAMBUDDY_STAGED` (default True), `BAMBUDDY_TIMEOUT`.
 - Dockerized (Dockerfile, docker-compose with `db`/`web`/`nginx`/`bambuddy`,
   `entrypoint.sh`) for deployment to a Raspberry Pi hosting the site +
@@ -123,10 +132,9 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 
 ## Still open / not implemented
 
-- **Verify the Bambuddy API** against its API browser and fix the
-  `TODO(verify)` constants in `jobs/bambuddy.py`: upload endpoint/field/id,
-  queue body (`archive_id`?) and staged flag, queue status values, webhook
-  secret delivery.
+- **Run the Bambuddy calls against a live instance**: they're checked
+  against Bambuddy's source only. Watch for the 409 that
+  `POST /queue/<id>/start` returns when Bambuddy thinks the spool is short.
 - **Hand-upload one `.gcode.3mf`** through Bambuddy's UI and print it, to
   confirm OrcaSlicer's CLI 3MF output works on the printer model.
 - **Verify OrcaSlicer end-to-end on the Pi** (headless Flatpak, filesystem

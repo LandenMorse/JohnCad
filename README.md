@@ -63,8 +63,8 @@ commented list):
 | `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `jm.json` file(s) (`--load-filaments`), optional                                      |
 | `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir`                                                                                           |
 | `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300`                                                                                 |
-| `BAMBUDDY_URL` | Bambuddy base URL, e.g. `http://127.0.0.1:8080`; blank = dispatch not configured                                         |
-| `BAMBUDDY_API_KEY` | Bambuddy API key (Manage Queue, Manage Library, Read Status, Control Printer)                                         |
+| `BAMBUDDY_URL` | Bambuddy base URL, default `http://127.0.0.1:8080` (Bambuddy runs on the same host as Django)                              |
+| `BAMBUDDY_API_KEY` | Bambuddy API key (Manage library, Add to queue, Read status); blank = dispatch not configured                        |
 | `BAMBUDDY_WEBHOOK_SECRET` | Shared secret Bambuddy's webhook must send; blank rejects all webhooks                                         |
 | `BAMBUDDY_PRINTER_ID` | Bambuddy's id for the printer jobs go to                                                                                |
 | `BAMBUDDY_STAGED` | `True` (default): jobs wait in Bambuddy until staff release them after clearing the plate                                |
@@ -325,15 +325,19 @@ Pi:
 1. `docker compose up -d bambuddy`, then open `http://<pi>:8080`, add the
    printers (LAN Mode on) and **hand-upload and print one `.gcode.3mf`**
    before going further.
-2. In Bambuddy, create an API key with Manage Queue, Manage Library, Read
-   Status and Control Printer. Put it in `BAMBUDDY_API_KEY`, set
-   `BAMBUDDY_URL=http://127.0.0.1:8080` and `BAMBUDDY_PRINTER_ID`.
-3. Open Bambuddy's API browser (`http://<pi>:8080/docs`) and check every
-   `TODO(verify)` constant in `jobs/bambuddy.py` against it.
-4. Set `BAMBUDDY_WEBHOOK_SECRET` to a random string, and in Bambuddy's
-   Settings > Notifications add a webhook to
-   `http://127.0.0.1:8000/api/bambuddy/webhook/?secret=<secret>`.
-   `ALLOWED_HOSTS` must include `127.0.0.1`.
+2. In Bambuddy (Settings > API keys), create a key with **Manage library**,
+   **Add to queue** and **Read status**. Put it in `BAMBUDDY_API_KEY`. Set
+   `BAMBUDDY_PRINTER_ID` to the printer's id in Bambuddy (shown in
+   `GET /api/v1/printers/`). `BAMBUDDY_URL` defaults to
+   `http://127.0.0.1:8080`.
+3. Set `BAMBUDDY_WEBHOOK_SECRET` to a random string. In Bambuddy's
+   Settings > Notifications, add a **Webhook** provider: URL
+   `http://127.0.0.1:8000/api/bambuddy/webhook/`, payload format
+   **generic**, **Auth header** = the secret, and turn on the print start,
+   complete, failed and stopped events. `ALLOWED_HOSTS` must include
+   `127.0.0.1`.
+4. Use Bambuddy's API browser (`http://<pi>:8080/docs`) to sanity-check the
+   calls in `jobs/bambuddy.py` against the version you run.
 5. If you are upgrading from the Arduino setup, delete the old
    `printer-service` user in `/admin/`; its token no longer works.
 
@@ -591,17 +595,20 @@ The `dispatch_worker` command (logic in `jobs/dispatch.py`, Bambuddy calls in
 Bambuddy queue as a staged item. Failures are stored on the job and shown on
 `/review/` with a **Retry** button (which reuses the upload); a failed print
 can be retried the same way. Staff see **Plate cleared, release next** on
-`/queue/`, which tells Bambuddy to start the oldest staged job.
+`/queue/`, which starts the oldest staged job's Bambuddy queue item
+(`POST /api/v1/queue/<id>/start`).
 
 ### Bambuddy webhook (`POST /api/bambuddy/webhook/`)
 
-Bambuddy reports print events here. It needs `BAMBUDDY_WEBHOOK_SECRET` as an
-`X-Webhook-Secret` header or `?secret=` and is blocked in nginx, so only
-Bambuddy on the Pi reaches it. `print_started` moves a job to `working`,
+Bambuddy reports print events here (its "generic" webhook payload). It needs
+`BAMBUDDY_WEBHOOK_SECRET` as `Authorization: Bearer <secret>` (Bambuddy's
+"Auth header" setting) or `?secret=`, and is blocked in nginx, so only
+Bambuddy on the Pi reaches it. Jobs are matched by the `johncad-job-<id>`
+name Bambuddy reports as `filename`. `print_start` moves a job to `working`,
 `print_complete` to `finished`, `print_failed`/`print_stopped` to `failed`.
 Repeats are no-ops, other events are ignored, and invalid transitions (e.g.
-complete before start) return `409`. The dispatch worker's 60s poll of
-Bambuddy's queue catches up on anything the webhook missed.
+complete before start) return `409`. The dispatch worker's 60s poll of each
+job's Bambuddy queue item catches up on anything the webhook missed.
 
 ### Deployment
 

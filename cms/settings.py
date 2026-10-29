@@ -208,14 +208,15 @@ ORCA_SLICER_TIMEOUT = int(os.environ.get('ORCA_SLICER_TIMEOUT', '300'))
 
 # Bambuddy (jobs/bambuddy.py, jobs/dispatch.py)
 
-# Base URL of the self-hosted Bambuddy on the Pi, e.g. http://127.0.0.1:8080.
-# Blank means dispatch is treated as not configured.
-BAMBUDDY_URL = os.environ.get('BAMBUDDY_URL', '')
-# API key created in Bambuddy (Settings > API keys) with "Manage Queue",
-# "Manage Library", "Read Status" and "Control Printer" (for release-next).
+# Base URL of Bambuddy, which runs on the same host as Django. It listens on
+# 8080 because gunicorn has 8000 (docker-compose `bambuddy` service).
+BAMBUDDY_URL = os.environ.get('BAMBUDDY_URL', 'http://127.0.0.1:8080')
+# API key created in Bambuddy (Settings > API keys) with "Manage library",
+# "Add to queue" and "Read status". Blank means dispatch isn't configured.
 BAMBUDDY_API_KEY = os.environ.get('BAMBUDDY_API_KEY', '')
-# Shared secret Bambuddy's webhook must send (header or ?secret=). Blank
-# rejects every webhook.
+# Shared secret Bambuddy's webhook must send, as its "Auth header" setting
+# (Authorization: Bearer ...) or ?secret= in the URL. Blank rejects every
+# webhook.
 BAMBUDDY_WEBHOOK_SECRET = os.environ.get('BAMBUDDY_WEBHOOK_SECRET', '')
 # Bambuddy's id for the printer jobs go to (one printer for now).
 BAMBUDDY_PRINTER_ID = os.environ.get('BAMBUDDY_PRINTER_ID', '')

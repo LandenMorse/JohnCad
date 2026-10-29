@@ -426,7 +426,7 @@ class DispatchWorkerTests(DispatchTestBase):
         self.assertIsNone(old.dispatch_started_at)
         self.assertIsNotNone(fresh.dispatch_started_at)
 
-    @mock.patch('jobs.bambuddy.queue_events', return_value={})
+    @mock.patch('jobs.bambuddy.queue_item_event', return_value=None)
     @mock.patch('jobs.bambuddy.enqueue', side_effect=['1', '2'])
     @mock.patch('jobs.bambuddy.upload_file', side_effect=['a', 'b'])
     def test_command_once_drains_and_polls(self, _upload, enqueue, poll):
@@ -434,7 +434,7 @@ class DispatchWorkerTests(DispatchTestBase):
         self.sliced()
         call_command('dispatch_worker', '--once')
         self.assertEqual(enqueue.call_count, 2)
-        poll.assert_called_once()
+        self.assertEqual(sorted(c.args[0] for c in poll.call_args_list), ['1', '2'])
 
     @mock.patch('jobs.bambuddy.requests.request')
     def test_client_sends_key_and_queue_body(self, request):
@@ -442,31 +442,60 @@ class DispatchWorkerTests(DispatchTestBase):
         request.return_value.json.return_value = {'id': 3}
         self.assertEqual(bambuddy.enqueue('9'), '3')
         method, url = request.call_args.args
-        self.assertEqual((method, url), ('POST', 'http://bambuddy.test/api/v1/queue'))
+        self.assertEqual((method, url), ('POST', 'http://bambuddy.test/api/v1/queue/'))
         self.assertEqual(request.call_args.kwargs['headers'], {'X-API-Key': 'key'})
         self.assertEqual(
             request.call_args.kwargs['json'],
-            {'archive_id': 9, 'printer_id': 1, 'manual_start': True},
+            {'library_file_id': 9, 'printer_id': 1, 'manual_start': True},
         )
+
+    @override_settings(BAMBUDDY_STAGED=False)
+    @mock.patch('jobs.bambuddy.requests.request')
+    def test_client_unstaged_queue_body(self, request):
+        request.return_value = mock.Mock(status_code=200, content=b'{"id": 3}')
+        request.return_value.json.return_value = {'id': 3}
+        bambuddy.enqueue('9')
+        self.assertIs(request.call_args.kwargs['json']['manual_start'], False)
+
+    @mock.patch('jobs.bambuddy.requests.request')
+    def test_client_upload(self, request):
+        request.return_value = mock.Mock(status_code=200, content=b'{"id": 12}')
+        request.return_value.json.return_value = {'id': 12, 'filename': 'x'}
+        self.assertEqual(bambuddy.upload_file(b'3mf', 'johncad-job-1.gcode.3mf'), '12')
+        method, url = request.call_args.args
+        self.assertEqual((method, url), ('POST', 'http://bambuddy.test/api/v1/library/files/'))
+        self.assertEqual(
+            request.call_args.kwargs['files'], {'file': ('johncad-job-1.gcode.3mf', b'3mf')},
+        )
+
+    def test_default_url_is_localhost(self):
+        from cms import settings as project_settings
+        self.assertEqual(project_settings.BAMBUDDY_URL, 'http://127.0.0.1:8080')
 
 
 class WebhookTests(DispatchTestBase):
     url = '/api/bambuddy/webhook/'
 
-    def post(self, event, job=None, secret='s3cret', **data):
+    def post(self, event, job=None, secret='s3cret', **variables):
+        # Bambuddy's "generic" webhook payload: flat, with the print's
+        # subtask name (upload name minus .gcode.3mf) as "filename".
         if job is not None:
-            data.setdefault('filename', f'johncad-job-{job.id}.gcode.3mf')
+            variables.setdefault('filename', f'johncad-job-{job.id}')
+        payload = {
+            'title': 'Print', 'message': '...', 'timestamp': '2026-10-29T03:00:00',
+            'source': 'Bambuddy', 'event': event, 'printer': 'X1C', **variables,
+        }
         return self.client.post(
             self.url,
-            json.dumps({'event': event, 'data': data}),
+            json.dumps(payload),
             content_type='application/json',
-            headers={'X-Webhook-Secret': secret} if secret else {},
+            headers={'Authorization': f'Bearer {secret}'} if secret else {},
         )
 
     def test_secret_required(self):
         job = self.dispatched()
-        self.assertEqual(self.post('print_started', job, secret='nope').status_code, 403)
-        self.assertEqual(self.post('print_started', job, secret='').status_code, 403)
+        self.assertEqual(self.post('print_start', job, secret='nope').status_code, 403)
+        self.assertEqual(self.post('print_start', job, secret='').status_code, 403)
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.QUEUED)
 
@@ -474,7 +503,7 @@ class WebhookTests(DispatchTestBase):
         job = self.dispatched()
         response = self.client.post(
             self.url + '?secret=s3cret',
-            json.dumps({'event': 'print_started', 'data': {'filename': f'johncad-job-{job.id}.gcode.3mf'}}),
+            json.dumps({'event': 'print_start', 'filename': f'johncad-job-{job.id}'}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 200)
@@ -482,16 +511,16 @@ class WebhookTests(DispatchTestBase):
     @override_settings(BAMBUDDY_WEBHOOK_SECRET='')
     def test_blank_secret_rejects_everything(self):
         job = self.dispatched()
-        self.assertEqual(self.post('print_started', job, secret='').status_code, 403)
+        self.assertEqual(self.post('print_start', job, secret='').status_code, 403)
 
     def test_full_lifecycle_and_idempotency(self):
         job = self.dispatched()
-        self.assertEqual(self.post('print_started', job).json()['status'], 'ok')
-        self.assertEqual(self.post('print_started', job).json()['status'], 'unchanged')
+        self.assertEqual(self.post('print_start', job).json()['status'], 'ok')
+        self.assertEqual(self.post('print_start', job).json()['status'], 'unchanged')
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.WORKING)
         self.assertIsNotNone(job.working_at)
-        self.post('print_complete', job, status='success')
+        self.post('print_complete', job)
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.FINISHED)
         self.assertIsNotNone(job.finished_at)
@@ -503,34 +532,42 @@ class WebhookTests(DispatchTestBase):
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.QUEUED)
 
-    def test_failure_and_unsuccessful_complete(self):
+    def test_failed_and_stopped(self):
         job = self.dispatched(status=Job.Status.WORKING)
-        self.post('print_failed', job)
+        self.post('print_failed', job, reason='Spaghetti detected')
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.FAILED)
-        self.assertIn('print_failed', job.dispatch_error)
+        self.assertIn('print_failed: Spaghetti detected', job.dispatch_error)
         other = self.dispatched(status=Job.Status.WORKING, bambuddy_file_id='8')
-        self.post('print_complete', other, status='cancelled')
+        self.post('print_stopped', other, reason='Unknown')
         other.refresh_from_db()
         self.assertEqual(other.status, Job.Status.FAILED)
+        self.assertEqual(other.dispatch_error, 'Bambuddy reported print_stopped.')
 
-    def test_match_by_archive_id(self):
-        job = self.dispatched(bambuddy_file_id='42')
-        self.post('print_started', archive_id=42, filename='renamed.3mf')
+    def test_full_filename_also_matches(self):
+        job = self.dispatched()
+        self.post('print_start', filename=f'johncad-job-{job.id}.gcode.3mf')
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.WORKING)
+
+    def test_similar_name_does_not_match(self):
+        job = self.dispatched()
+        self.post('print_start', filename=f'johncad-job-{job.id}0')
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
 
     def test_unknown_events_and_jobs_ignored(self):
         job = self.dispatched()
         self.assertEqual(self.post('print_progress', job).json()['status'], 'ignored')
-        self.assertEqual(self.post('print_started', archive_id=999).json()['status'], 'ignored')
+        self.assertEqual(self.post('print_start', filename='benchy').json()['status'], 'ignored')
+        self.assertEqual(self.post('test').json()['status'], 'ignored')
         undispatched = self.sliced()
-        self.assertEqual(self.post('print_started', undispatched).json()['status'], 'ignored')
+        self.assertEqual(self.post('print_start', undispatched).json()['status'], 'ignored')
 
     def test_bad_json(self):
         response = self.client.post(
             self.url, 'nope', content_type='application/json',
-            headers={'X-Webhook-Secret': 's3cret'},
+            headers={'Authorization': 'Bearer s3cret'},
         )
         self.assertEqual(response.status_code, 400)
 
@@ -551,8 +588,8 @@ class PollingFallbackTests(DispatchTestBase):
         done = self.dispatched(bambuddy_queue_id='2')  # missed its start webhook
         failed = self.dispatched(bambuddy_queue_id='3', status=Job.Status.WORKING)
         untouched = self.dispatched(bambuddy_queue_id='4')
-        events = {'1': 'started', '2': 'completed', '3': 'failed'}
-        with mock.patch('jobs.bambuddy.queue_events', return_value=events):
+        events = {'1': 'started', '2': 'completed', '3': 'failed', '4': None}
+        with mock.patch('jobs.bambuddy.queue_item_event', side_effect=events.get):
             self.assertEqual(sync_from_bambuddy(), 3)
         statuses = [Job.objects.get(pk=j.pk).status for j in (started, done, failed, untouched)]
         self.assertEqual(
@@ -560,25 +597,32 @@ class PollingFallbackTests(DispatchTestBase):
             [Job.Status.WORKING, Job.Status.FINISHED, Job.Status.FAILED, Job.Status.QUEUED],
         )
 
-    @mock.patch('jobs.bambuddy.queue_events')
+    @mock.patch('jobs.bambuddy.queue_item_event', return_value='missing')
+    def test_missing_item_left_alone(self, _poll):
+        job = self.dispatched()
+        self.assertEqual(sync_from_bambuddy(), 0)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.QUEUED)
+
+    @mock.patch('jobs.bambuddy.queue_item_event')
     def test_no_poll_when_nothing_in_flight(self, poll):
         self.sliced()
         self.assertEqual(sync_from_bambuddy(), 0)
         poll.assert_not_called()
 
     @mock.patch('jobs.bambuddy.requests.request')
-    def test_queue_events_maps_statuses(self, request):
-        items = [
-            {'id': 1, 'status': 'printing'},
-            {'id': 2, 'status': 'completed'},
-            {'id': 3, 'status': 'pending'},
-            {'id': 4, 'status': 'cancelled'},
-        ]
-        request.return_value = mock.Mock(status_code=200, content=b'[]')
-        request.return_value.json.return_value = items
-        self.assertEqual(
-            bambuddy.queue_events(), {'1': 'started', '2': 'completed', '4': 'failed'},
-        )
+    def test_queue_item_event_maps_statuses(self, request):
+        expected = {
+            'pending': None, 'printing': 'started', 'completed': 'completed',
+            'failed': 'failed', 'skipped': 'failed', 'cancelled': 'failed',
+        }
+        for status, event in expected.items():
+            request.return_value = mock.Mock(status_code=200, content=b'{}')
+            request.return_value.json.return_value = {'id': 5, 'status': status}
+            self.assertEqual(bambuddy.queue_item_event('5'), event, status)
+        self.assertEqual(request.call_args.args, ('GET', 'http://bambuddy.test/api/v1/queue/5'))
+        request.return_value = mock.Mock(status_code=404, content=b'{}', text='{"detail": "not found"}')
+        self.assertEqual(bambuddy.queue_item_event('5'), 'missing')
 
 
 class DispatchButtonTests(DispatchTestBase):
@@ -617,21 +661,21 @@ class DispatchButtonTests(DispatchTestBase):
         response = self.client.post(reverse('job-review-retry-dispatch', args=[failed.pk]))
         self.assertEqual(response.status_code, 404)
 
-    @mock.patch('jobs.bambuddy.release_next')
+    @mock.patch('jobs.bambuddy.start_item')
     def test_release_next_releases_oldest_staged(self, release):
-        first = self.dispatched(dispatched_at=timezone.now() - timedelta(minutes=5))
+        first = self.dispatched(dispatched_at=timezone.now() - timedelta(minutes=5), bambuddy_queue_id='81')
         second = self.dispatched()
         self.client.force_login(self.teacher)
         self.assertContains(self.client.get(reverse('queue')), 'Plate cleared, release next')
         self.client.post(reverse('queue-release-next'))
-        release.assert_called_once()
+        release.assert_called_once_with('81')
         first.refresh_from_db()
         second.refresh_from_db()
         self.assertIsNotNone(first.released_at)
         self.assertIsNone(second.released_at)
         self.assertEqual(first.dispatch_state, 'released')
 
-    @mock.patch('jobs.bambuddy.release_next', side_effect=BambuddyError('offline'))
+    @mock.patch('jobs.bambuddy.start_item', side_effect=BambuddyError('offline'))
     def test_release_next_error_shown_and_not_marked(self, _release):
         job = self.dispatched()
         self.client.force_login(self.teacher)

@@ -28,7 +28,7 @@ def bambuddy_webhook(request):
     # outside JohnCad) so Bambuddy doesn't retry them.
     if parsed is None:
         return JsonResponse({'status': 'ignored'})
-    job = find_job_for_webhook(parsed['job_id'], parsed['archive_id'])
+    job = find_job_for_webhook(parsed['job_id'])
     if job is None:
         return JsonResponse({'status': 'ignored'})
 
