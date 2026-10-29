@@ -443,7 +443,7 @@ button.btn-ghost:hover { border-color: var(--accent); color: var(--accent-strong
 
 .status-pending, .status-approved { color: var(--accent); }
 .status-finished { color: var(--success); }
-.status-rejected { color: var(--danger); }
+.status-rejected, .status-failed { color: var(--danger); }
 
 .error-detail { color: var(--danger); font-size: 0.95rem; font-weight: 400; margin-top: 0.3rem; max-width: 28rem; word-break: break-word; }
 .error-detail::before { content: "> "; }

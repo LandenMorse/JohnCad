@@ -1,17 +1,14 @@
 # JohnCad
 
 A Django app for a small 3D-printing pipeline: Students upload `.stl` files,
-request prints, an admin reviews and approves them, OrcaSlicer converts the
-approved files to G-code, and an Arduino UNO R4 WiFi controller at the
-printers pulls finished jobs down to feed to the printers via microSD card.
-
-Two different Pi/board references show up in this project — don't confuse
-them: the **JohnCad server** (Django + Postgres) is intended to run on a
-Raspberry Pi; the **printer controller** at the printers is a separate
-Arduino UNO R4 WiFi, not a Pi at all.
+request prints, a teacher reviews and approves them, OrcaSlicer converts the
+approved files to `.gcode.3mf`, and JohnCad sends them to Bambu printers
+through a self-hosted [Bambuddy](https://github.com/maziggy/bambuddy) on the
+same Raspberry Pi. Django never talks to the printers directly.
 
 See `CLAUDE.md` for the current implementation status and open items, and
-`PRINTER_CONTROLLER_API.md` for the printer controller's API contract in detail.
+`docs/BAMBUDDY_PLAN.md` for the Bambuddy plan, network setup and what is
+still unverified.
 
 ## Contents
 
@@ -66,6 +63,13 @@ commented list):
 | `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `jm.json` file(s) (`--load-filaments`), optional                                      |
 | `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir`                                                                                           |
 | `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300`                                                                                 |
+| `BAMBUDDY_URL` | Bambuddy base URL, default `http://127.0.0.1:8080` (Bambuddy runs on the same host as Django)                              |
+| `BAMBUDDY_API_KEY` | Bambuddy API key (Manage library, Add to queue, Read status); blank = dispatch not configured                        |
+| `BAMBUDDY_WEBHOOK_SECRET` | Shared secret Bambuddy's webhook must send; blank rejects all webhooks                                         |
+| `BAMBUDDY_PRINTER_ID` | Bambuddy's id for the printer jobs go to                                                                                |
+| `BAMBUDDY_STAGED` | `True` (default): jobs wait in Bambuddy until staff release them after clearing the plate                                |
+| `BAMBUDDY_TIMEOUT` | Bambuddy request timeout in seconds, default `60`                                                                     |
+| `BAMBUDDY_VERSION` / `BAMBUDDY_PORT` | Image tag and port for the compose `bambuddy` service                                                       |
 
 ### 3. Start Postgres
 
@@ -183,7 +187,8 @@ mkdir -p private_media/slicing_tmp
 flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir $PWD/private_media/slicing_tmp   --load-settings "/home/<user>/orca/machine.json;/home/<user>/orca/process.json" some_model.stl
 ```
 
-It should write a `.gcode` file. If it fails for lack of a display, try
+It should write a `.gcode` file. Add `--export-3mf out.gcode.3mf` to check
+the `.gcode.3mf` that JohnCad actually sends to Bambuddy. If it fails for lack of a display, try
 `ORCA_SLICER_CMD=xvfb-run -a flatpak run com.orcaslicer.OrcaSlicer` in `.env`
 (`sudo apt install xvfb`). This path is untested on real hardware.
 
@@ -243,6 +248,32 @@ Without this service running, approved jobs just sit at "Waiting to slice".
 Jobs approved before the worker existed are picked up automatically. For a
 one-off run without the service: `python manage.py slice_worker --once`.
 
+**Dispatch worker.** The `dispatch_worker` command sends sliced jobs to
+Bambuddy and, every 60s, polls Bambuddy's queue in case a webhook was missed.
+Create `/etc/systemd/system/johncad-dispatcher.service`:
+
+```ini
+[Unit]
+Description=JohnCad Bambuddy dispatch worker
+After=network.target docker.service
+
+[Service]
+User=<user>
+WorkingDirectory=/home/<user>/JohnCad
+EnvironmentFile=/home/<user>/JohnCad/.env
+ExecStart=/home/<user>/JohnCad/.venv/bin/python manage.py dispatch_worker
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now johncad-dispatcher
+journalctl -u johncad-dispatcher -f
+```
+
 Gunicorn listens on localhost only; nginx (next step) is the public entry
 point. Static files are served by WhiteNoise. The compose `db` service has `restart: unless-stopped`, so
 Postgres comes back after reboots. The compose `web`/`nginx` services and `nginx/nginx.conf` are not
@@ -250,10 +281,9 @@ used in this setup (the `web` container can't reach the host's Flatpak);
 nginx runs on the host using `nginx/johncad.host.conf`.
 
 **8. nginx + HTTPS.** Requires a real domain name pointing at the Pi (A/AAAA
-record) with ports 80 and 443 forwarded to it from your router. The printer
-controller uses `WiFiSSLClient` against `https://rhsprint.crabdance.com/api`, so a
-publicly trusted certificate (Let's Encrypt) is the intended setup — a
-self-signed cert would not be trusted by the Arduino.
+record) with ports 80 and 443 forwarded to it from your router. The config
+returns 404 for `/api/`: the Bambuddy webhook is only reachable on the Pi
+itself.
 
 ```bash
 sudo apt install -y nginx certbot
@@ -278,29 +308,38 @@ Finally change `HTTPS_ENABLED=False` to `True` in `.env` (no inline comments in 
 The site is at `https://rhsprint.crabdance.com/`. Uploads up to 512MB are allowed
 (`client_max_body_size` in the nginx config).
 
-**9. Finish up:** log into `/admin/`, then set up the printer controller's
-API token (next section). After pulling updates later:
+**9. Finish up:** log into `/admin/`, then set up Bambuddy (next section).
+After pulling updates later:
 
 ```bash
 git pull && source .venv/bin/activate && pip install -r requirements.txt
 python manage.py migrate && python manage.py collectstatic --noinput
-sudo systemctl restart johncad
+sudo systemctl restart johncad johncad-slicer johncad-dispatcher
 ```
 
-### Printer controller setup
+### Bambuddy setup
 
-The printer controller (an Arduino UNO R4 WiFi, not part of this repo) needs
-credentials to talk to the API:
+Network, printer and school-side steps are in `docs/BAMBUDDY_PLAN.md`. On the
+Pi:
 
-1. In `/admin/`, create a dedicated user for it (e.g. `printer-service`) and
-   tick **Staff status** — the API rejects non-staff users. Don't give it
-   any other permissions.
-2. In the admin's **Tokens** section, create a token for that user.
-3. Give the controller that key; it authenticates with
-   `Authorization: Token <key>` on every request.
-
-Full endpoint documentation, example Arduino C firmware, and hardware/library
-notes are in `PRINTER_CONTROLLER_API.md`.
+1. `docker compose up -d bambuddy`, then open `http://<pi>:8080`, add the
+   printers (LAN Mode on) and **hand-upload and print one `.gcode.3mf`**
+   before going further.
+2. In Bambuddy (Settings > API keys), create a key with **Manage library**,
+   **Add to queue** and **Read status**. Put it in `BAMBUDDY_API_KEY`. Set
+   `BAMBUDDY_PRINTER_ID` to the printer's id in Bambuddy (shown in
+   `GET /api/v1/printers/`). `BAMBUDDY_URL` defaults to
+   `http://127.0.0.1:8080`.
+3. Set `BAMBUDDY_WEBHOOK_SECRET` to a random string. In Bambuddy's
+   Settings > Notifications, add a **Webhook** provider: URL
+   `http://127.0.0.1:8000/api/bambuddy/webhook/`, payload format
+   **generic**, **Auth header** = the secret, and turn on the print start,
+   complete, failed and stopped events. `ALLOWED_HOSTS` must include
+   `127.0.0.1`.
+4. Use Bambuddy's API browser (`http://<pi>:8080/docs`) to sanity-check the
+   calls in `jobs/bambuddy.py` against the version you run.
+5. If you are upgrading from the Arduino setup, delete the old
+   `printer-service` user in `/admin/`; its token no longer works.
 
 ### OrcaSlicer
 
@@ -348,14 +387,8 @@ docker compose down              # stop everything (data persists in named volum
 Useful one-offs via `manage.py shell -c "..."`:
 
 ```bash
-# Create a printer-service token user
-python manage.py shell -c "
-from django.contrib.auth.models import User
-from rest_framework.authtoken.models import Token
-u, _ = User.objects.get_or_create(username='printer-service', defaults={'is_staff': True})
-t, _ = Token.objects.get_or_create(user=u)
-print(t.key)
-"
+# Send waiting jobs to Bambuddy and poll once, without the service
+python manage.py dispatch_worker --once
 ```
 
 ## Program layout
@@ -384,20 +417,23 @@ JohnCad/
 │   ├── models.py                 # Job (FK -> attachments.Attachment)
 │   ├── admin.py                    # JobAdmin + approve/reject actions
 │   ├── slicing.py                    # OrcaSlicer CLI integration
-│   ├── views.py                        # attachment_export, queue
-│   ├── urls.py                           # attachments/<id>/export/, queue/
-│   ├── api_views.py, api_urls.py           # printer controller endpoints, mounted at /api/
+│   ├── bambuddy.py                     # Bambuddy REST client (all unverified API details)
+│   ├── dispatch.py                     # dispatch, webhook/polling status sync, release-next
+│   ├── management/commands/            # slice_worker, dispatch_worker
+│   ├── views.py                        # attachment_export, queue, review
+│   ├── urls.py                           # attachments/<id>/export/, queue/, review/
+│   ├── api_views.py, api_urls.py           # Bambuddy webhook, mounted at /api/
 │   ├── migrations/                           # schema history
 │   └── templates/jobs/                         # queue.html
 ├── static/css/site.css        # the site's one stylesheet
 ├── nginx/nginx.conf            # reverse-proxy config for the Docker stack
 ├── Dockerfile                   # web image: Python + gunicorn
-├── docker-compose.yml             # db + web + nginx services
+├── docker-compose.yml             # db + web + nginx + bambuddy services
 ├── entrypoint.sh                    # container startup: migrate, collectstatic, then exec gunicorn
 ├── requirements.txt                  # Python dependencies
 ├── .env.example                       # documented list of all env vars
 ├── CLAUDE.md                           # architecture notes, current status, open items
-└── PRINTER_CONTROLLER_API.md            # printer controller API contract
+└── docs/BAMBUDDY_PLAN.md                # Bambuddy plan, network setup, unverified items
 ```
 
 Dependency direction is one-way: `jobs` imports from `attachments` (the `Job.attachment`
@@ -432,14 +468,18 @@ actually moves through the approval → slicing → printing pipeline.
 |---|---|
 | `user` | FK to `User`, `related_name='jobs'` — who requested this print |
 | `attachment` | FK to `Attachment`, `related_name='jobs'` — what's being printed |
-| `status` | One of `pending`/`approved`/`queued`/`working`/`finished`/`rejected` — see status table below |
-| `gcode` | Sliced output, populated by `slicing.slice_to_gcode()` once a job is approved and slicing succeeds. Blank until then. |
+| `status` | One of `pending`/`approved`/`queued`/`working`/`finished`/`rejected`/`failed` — see status table below |
+| `sliced_file` | Sliced `.gcode.3mf`, populated by `slicing.slice_to_3mf()` once a job is approved and slicing succeeds. Blank until then. |
 | `created_at` | Set when the Student clicks Export |
 | `slicing_started_at` | Set while the slice worker is slicing the job; blank otherwise |
 | `slicing_error` | Why the last slice failed; blank if none. Cleared on retry |
 | `approved_at` | Set when an admin approves; drives FIFO ordering of the queue |
-| `working_at` | Set by the printer controller API when it starts exporting to a microSD card |
-| `finished_at` | Set by the printer controller API when the microSD card is returned |
+| `bambuddy_file_id` / `bambuddy_queue_id` | Bambuddy's ids for the uploaded file and the queue item; set by the dispatch worker |
+| `dispatch_started_at` | Set while the dispatch worker is sending the job |
+| `dispatch_error` | Why the last dispatch or print failed; blank if none. Cleared on retry |
+| `dispatched_at` | When the job reached Bambuddy's queue |
+| `released_at` | When staff released it after clearing the plate |
+| `working_at` / `finished_at` / `failed_at` | Set from Bambuddy's webhook (or the polling fallback) |
 
 #### Job status lifecycle
 
@@ -447,9 +487,10 @@ actually moves through the approval → slicing → printing pipeline.
 |---|---|---|
 | `pending` | Student (Export click) | Awaiting admin review |
 | `approved` | Admin / teacher | Signed off; waiting for the `slice_worker` to slice it (shown as Waiting to slice / Slicing… / Slicing failed) |
-| `queued` | System, automatically | Slicing succeeded, G-code ready, sitting in the active print queue (FIFO by `approved_at`) |
-| `working` | Printer controller, via API | G-code has been exported to a microSD card |
-| `finished` | Printer controller, via API | The microSD card came back after printing |
+| `queued` | System, automatically | Sliced; being sent to Bambuddy, then waiting there for the plate to be cleared (FIFO by `approved_at`) |
+| `working` | Bambuddy webhook | The print started |
+| `finished` | Bambuddy webhook | The print completed |
+| `failed` | Bambuddy webhook | The print failed or was stopped; a teacher can Retry it |
 | `rejected` | Admin | Declined instead of approved — terminal |
 
 If slicing fails or the slicer isn't configured, the job stays parked in
@@ -521,25 +562,23 @@ It contains `Job` (registered in `jobs/admin.py`, changelist at
 `Attachment` (`attachments/admin.py`) admin. Two custom bulk actions on the
 Job changelist:
 
-- **Approve selected jobs** — moves `pending → approved`, stamps
-  `approved_at`, and immediately attempts slicing. On success the job
-  auto-advances to `queued`; on failure it's left in `approved` with a
-  message explaining why (see status table above).
+- **Approve selected jobs** — moves `pending → approved` and stamps
+  `approved_at`; the slice worker then slices it (see status table above).
 - **Reject selected jobs** — moves `pending → rejected`.
 
 ### Slicing (`jobs/slicing.py`)
 
 The `slice_worker` management command (`jobs/management/commands/`, logic in
-`jobs/services.py`) polls for `approved` jobs without G-code, claims the oldest
-one atomically, and calls `slice_to_gcode`. Failures are stored on the job, so
+`jobs/services.py`) polls for `approved` jobs without a sliced file, claims the oldest
+one atomically, and calls `slice_to_3mf`. Failures are stored on the job, so
 a failing job isn't retried in a loop until a teacher clicks Retry. Claims left
 by a crashed worker are released after `ORCA_SLICER_TIMEOUT` + 60s.
 
-`slice_to_gcode(job)` invokes OrcaSlicer as a subprocess
+`slice_to_3mf(job)` invokes OrcaSlicer as a subprocess
 (`<ORCA_SLICER_CMD> --slice 0 --outputdir <tmp> --load-settings <settings>
 [--load-filaments <filaments>] [--datadir <dir>] <stl>`), picks up the
-generated `.gcode` from the output dir into `job.gcode`, and advances the job
-to `queued`. No shell interpolation (`shell=True`) is used. Configurable via
+generated `.gcode.3mf` (`--export-3mf`) into `job.sliced_file`, and advances
+the job to `queued`. No shell interpolation (`shell=True`) is used. Configurable via
 the `ORCA_SLICER_*` env vars above.
 
 ### Public print queue (`/queue/`)
@@ -548,25 +587,34 @@ Any logged-in Student (not just admins) can see what's currently `queued` or
 `working` — attachment name, uploader's username, and status. Read-only;
 there's no way for a Student to reorder or cancel jobs from here.
 
-### Printer controller API (`/api/...`)
+### Dispatch to Bambuddy
 
-Token-authenticated (DRF `TokenAuthentication`), built for an Arduino UNO R4
-WiFi at the printers to poll and pull jobs — see `PRINTER_CONTROLLER_API.md`
-for the full contract with examples. In short:
+The `dispatch_worker` command (logic in `jobs/dispatch.py`, Bambuddy calls in
+`jobs/bambuddy.py`) claims the oldest sliced `queued` job, uploads its
+`.gcode.3mf` as `johncad-job-<id>.gcode.3mf`, and adds it to the printer's
+Bambuddy queue as a staged item. Failures are stored on the job and shown on
+`/review/` with a **Retry** button (which reuses the upload); a failed print
+can be retried the same way. Staff see **Plate cleared, release next** on
+`/queue/`, which starts the oldest staged job's Bambuddy queue item
+(`POST /api/v1/queue/<id>/start`).
 
-- `GET /api/jobs/queue/` — what's ready to print, FIFO
-- `GET /api/jobs/<id>/gcode/` — download a job's sliced G-code
-- `POST /api/jobs/<id>/working/` — mark a job as being written to a microSD card
-- `POST /api/jobs/<id>/finished/` — mark a job finished once the card returns
+### Bambuddy webhook (`POST /api/bambuddy/webhook/`)
 
-Invalid state transitions (e.g. `finished` before `working`) return `409`
-rather than silently succeeding.
+Bambuddy reports print events here (its "generic" webhook payload). It needs
+`BAMBUDDY_WEBHOOK_SECRET` as `Authorization: Bearer <secret>` (Bambuddy's
+"Auth header" setting) or `?secret=`, and is blocked in nginx, so only
+Bambuddy on the Pi reaches it. Jobs are matched by the `johncad-job-<id>`
+name Bambuddy reports as `filename`. `print_start` moves a job to `working`,
+`print_complete` to `finished`, `print_failed`/`print_stopped` to `failed`.
+Repeats are no-ops, other events are ignored, and invalid transitions (e.g.
+complete before start) return `409`. The dispatch worker's 60s poll of each
+job's Bambuddy queue item catches up on anything the webhook missed.
 
 ### Deployment
 
 Dockerized for a Raspberry Pi: `Dockerfile` (Python + gunicorn,
 running as a non-root user), `docker-compose.yml` (Postgres + the Django app
-+ nginx reverse proxy), `entrypoint.sh` (runs migrations and `collectstatic`
++ nginx reverse proxy + Bambuddy), `entrypoint.sh` (runs migrations and `collectstatic`
 before starting gunicorn). Static files are served via WhiteNoise from
 within the Django process — no separate static file server needed.
 

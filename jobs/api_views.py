@@ -1,62 +1,41 @@
-import os
+import json
 
-from django.http import FileResponse
-from django.shortcuts import get_object_or_404
-from django.utils import timezone
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 
-from .models import Job
-
-
-@api_view(['GET'])
-def queue(request):
-    jobs = Job.objects.filter(status=Job.Status.QUEUED).order_by('approved_at')
-    data = [
-        {
-            'id': job.id,
-            'attachment_name': job.attachment.name,
-            'username': job.user.username,
-            'gcode_download_url': request.build_absolute_uri(
-                f'/api/jobs/{job.id}/gcode/'
-            ),
-        }
-        for job in jobs
-    ]
-    return Response(data)
+from . import bambuddy
+from .dispatch import APPLIED, CONFLICT, apply_event, find_job_for_webhook
 
 
-@api_view(['GET'])
-def download_gcode(request, pk):
-    job = get_object_or_404(Job, pk=pk)
-    if job.status not in (Job.Status.QUEUED, Job.Status.WORKING):
-        return Response({'error': f'Job is "{job.status}", G-code only served while queued/working.'}, status=403)
-    if not job.gcode:
-        return Response({'error': 'Job has no G-code.'}, status=404)
-    return FileResponse(
-        job.gcode.open('rb'),
-        as_attachment=True,
-        filename=os.path.basename(job.gcode.name),
-    )
+@csrf_exempt
+@require_POST
+def bambuddy_webhook(request):
+    """Print status from Bambuddy's outgoing webhook.
 
+    Meant to be reached only from Bambuddy on the same host: the public nginx
+    config doesn't proxy /api/. Authenticated by BAMBUDDY_WEBHOOK_SECRET.
+    """
+    if not bambuddy.webhook_secret_ok(request):
+        return JsonResponse({'error': 'Bad or missing webhook secret.'}, status=403)
+    try:
+        payload = json.loads(request.body)
+    except ValueError:
+        return JsonResponse({'error': 'Body is not JSON.'}, status=400)
 
-@api_view(['POST'])
-def mark_working(request, pk):
-    job = get_object_or_404(Job, pk=pk)
-    if job.status != Job.Status.QUEUED:
-        return Response({'error': f'Job is "{job.status}", expected "queued".'}, status=409)
-    job.status = Job.Status.WORKING
-    job.working_at = timezone.now()
-    job.save(update_fields=['status', 'working_at'])
-    return Response({'status': 'ok'})
+    parsed = bambuddy.parse_webhook(payload)
+    # 200 for events JohnCad doesn't track (progress, offline, prints started
+    # outside JohnCad) so Bambuddy doesn't retry them.
+    if parsed is None:
+        return JsonResponse({'status': 'ignored'})
+    job = find_job_for_webhook(parsed['job_id'])
+    if job is None:
+        return JsonResponse({'status': 'ignored'})
 
-
-@api_view(['POST'])
-def mark_finished(request, pk):
-    job = get_object_or_404(Job, pk=pk)
-    if job.status != Job.Status.WORKING:
-        return Response({'error': f'Job is "{job.status}", expected "working".'}, status=409)
-    job.status = Job.Status.FINISHED
-    job.finished_at = timezone.now()
-    job.save(update_fields=['status', 'finished_at'])
-    return Response({'status': 'ok'})
+    result = apply_event(job, parsed['event'], parsed['detail'])
+    if result == CONFLICT:
+        return JsonResponse(
+            {'error': f'Job is "{job.status}", can\'t apply "{parsed["event"]}".'},
+            status=409,
+        )
+    return JsonResponse({'status': 'ok' if result == APPLIED else 'unchanged', 'job': job.id})

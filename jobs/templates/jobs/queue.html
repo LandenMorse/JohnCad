@@ -4,6 +4,20 @@
 <h1>Print Queue</h1>
 <p class="subtitle">Jobs currently queued or being printed.</p>
 
+{% if user.is_staff %}
+<div class="card">
+    {% if next_staged %}
+    <p>Next up: <strong>{{ next_staged.attachment.name }}</strong> ({{ next_staged.user.username }}). Clear the build plate, then release it.</p>
+    <form method="post" action="{% url 'queue-release-next' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn-success">Plate cleared, release next</button>
+    </form>
+    {% else %}
+    <p class="subtitle">No job is waiting for the plate to be cleared.</p>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="card">
     <div class="table-wrap">
     <table>
@@ -15,7 +29,7 @@
             <tr>
                 <td>{{ job.attachment.name }}</td>
                 <td>{{ job.user.username }}</td>
-                <td><span class="status-badge">{{ job.get_status_display }}</span></td>
+                <td><span class="status-badge">{% if job.dispatch_state == 'staged' %}Waiting for plate clear{% elif job.dispatch_state == 'released' %}Starting{% else %}{{ job.get_status_display }}{% endif %}</span></td>
             </tr>
             {% empty %}
             <tr class="empty-row"><td colspan="3">Nothing in the queue right now.</td></tr>
