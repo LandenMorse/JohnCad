@@ -69,6 +69,9 @@ commented list):
 | `BAMBUDDY_PRINTER_ID` | Fallback Bambuddy printer id for jobs with no printer chosen (single-printer setups; otherwise add Printers in `/admin/`) |
 | `BAMBUDDY_STAGED` | `True` (default): jobs wait in Bambuddy until staff release them after clearing the plate                                |
 | `BAMBUDDY_TIMEOUT` | Bambuddy request timeout in seconds, default `60`                                                                     |
+| `BAMBUDDY_VIA_AGENT` | `True` when Bambuddy is on another network and a print agent pulls jobs from `/agent-api/` (see [`agent/`](agent/README.md)); default `False` |
+| `AGENT_CLAIM_TIMEOUT` | Seconds before a job an agent stopped downloading is offered again, default `900`                                  |
+| `AGENT_POLL_INTERVAL` | Seconds between agent check-ins, sent to agents, default `15`                                                      |
 | `BAMBUDDY_VERSION` / `BAMBUDDY_PORT` | Image tag and port for the compose `bambuddy` service                                                       |
 
 ### 3. Start Postgres
@@ -323,6 +326,14 @@ If the school network can't accept inbound connections, run `frps` + Caddy on a
 home Pi and `frpc` on the school Pi. Example configs and step-by-step notes are in
 [`deploy/frp/`](deploy/frp/README.md).
 
+### Site at home, printers at school (print agent)
+
+If the site is hosted away from the printers (e.g. a Pi at home) and the
+school network only allows outbound HTTPS, set `BAMBUDDY_VIA_AGENT=True` and
+run the print agent next to Bambuddy at school. It checks in over port 443,
+downloads jobs in resumable chunks and reports status back. No tunnel and no
+inbound access needed. Setup: [`agent/README.md`](agent/README.md).
+
 ### Bambuddy setup
 
 Network, printer and school-side steps are in `docs/BAMBUDDY_PLAN.md`. On the
@@ -402,6 +413,9 @@ Useful one-offs via `manage.py shell -c "..."`:
 ```bash
 # Send waiting jobs to Bambuddy and poll once, without the service
 python manage.py dispatch_worker --once
+
+# Create a print agent and print its key (shown once); --rotate replaces it
+python manage.py create_agent_key school-pi
 ```
 
 ## Program layout
@@ -430,14 +444,17 @@ JohnCad/
 │   ├── models.py                 # Job (FK -> attachments.Attachment)
 │   ├── admin.py                    # JobAdmin + approve/reject actions
 │   ├── slicing.py                    # OrcaSlicer CLI integration
-│   ├── bambuddy.py                     # Bambuddy REST client (all unverified API details)
-│   ├── dispatch.py                     # dispatch, webhook/polling status sync, release-next
-│   ├── management/commands/            # slice_worker, dispatch_worker
+│   ├── bambuddy_client.py              # Bambuddy REST API details + client, no Django (shared with agent/)
+│   ├── bambuddy.py                     # Django wrapper for it (settings) + webhook parsing
+│   ├── dispatch.py                     # dispatch, status sync, release-next, print agent state changes
+│   ├── agent_api.py, agent_urls.py     # print agent API, mounted at /agent-api/v1/
+│   ├── management/commands/            # slice_worker, dispatch_worker, create_agent_key
 │   ├── views.py                        # attachment_export, queue, review
 │   ├── urls.py                           # attachments/<id>/export/, queue/, review/
 │   ├── api_views.py, api_urls.py           # Bambuddy webhook, mounted at /api/
 │   ├── migrations/                           # schema history
 │   └── templates/jobs/                         # queue.html
+├── agent/                      # print agent for the school Pi (johncad_agent.py, systemd unit, README)
 ├── static/css/site.css        # the site's one stylesheet
 ├── nginx/nginx.conf            # reverse-proxy config for the Docker stack
 ├── Dockerfile                   # web image: Python + gunicorn
@@ -610,6 +627,20 @@ Bambuddy queue as a staged item. Failures are stored on the job and shown on
 can be retried the same way. Staff see **Plate cleared, release next** on
 `/queue/`, which starts the oldest staged job's Bambuddy queue item
 (`POST /api/v1/queue/<id>/start`).
+
+### Print agent (`/agent-api/v1/`, `BAMBUDDY_VIA_AGENT=True`)
+
+When Bambuddy is on another network, the `dispatch_worker` isn't used: a
+print agent next to Bambuddy (`agent/johncad_agent.py`, run as a systemd
+service) polls the site over HTTPS, claims sliced jobs, downloads them with
+HTTP Range requests (resumable, SHA-256 checked), uploads and enqueues them in
+its Bambuddy, and reports the queue item back. **Plate cleared, release next**
+then only records a request, which the agent carries out on its next check-in
+(a failure, such as a short spool, shows on `/queue/`). The agent reports
+print status from Bambuddy's queue, so no webhook is needed. Agents
+authenticate with a key managed in `/admin/` > Printer agents (stored hashed,
+revocable, optionally limited to some printers). API and setup:
+[`agent/README.md`](agent/README.md).
 
 ### Bambuddy webhook (`POST /api/bambuddy/webhook/`)
 

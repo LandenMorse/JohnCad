@@ -1,6 +1,7 @@
 import logging
 import time
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from jobs.bambuddy import BambuddyError, BambuddyNotConfigured
@@ -35,6 +36,20 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, interval, poll_interval, once, **options):
+        if settings.BAMBUDDY_VIA_AGENT:
+            # The print agent on the printers' network dispatches instead.
+            # Idle rather than exit, so a leftover Restart=always systemd unit
+            # doesn't restart-loop; disable the unit to get rid of it.
+            logger.warning('BAMBUDDY_VIA_AGENT is on: the print agent dispatches '
+                           'jobs, so the dispatch worker has nothing to do. '
+                           'Disable this service.')
+            if once:
+                return
+            try:
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                return
         logger.info('Dispatch worker started.')
         last_poll = 0.0
         try:

@@ -1,6 +1,6 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 
-from .models import Job, Printer
+from .models import Job, Printer, PrinterAgent
 from .services import approve_job, reject_job
 
 
@@ -34,7 +34,8 @@ class JobAdmin(admin.ModelAdmin):
         'created_at', 'approved_at', 'working_at', 'finished_at',
         'slicing_started_at', 'slicing_error',
         'bambuddy_file_id', 'bambuddy_queue_id', 'dispatch_started_at',
-        'dispatch_error', 'dispatched_at', 'released_at', 'failed_at',
+        'dispatch_error', 'dispatched_at', 'agent', 'release_requested_at',
+        'release_error', 'released_at', 'failed_at',
     )
     actions = [approve_jobs, reject_jobs]
 
@@ -44,3 +45,35 @@ class PrinterAdmin(admin.ModelAdmin):
     list_display = ('name', 'bambuddy_printer_id', 'is_active', 'slicer_settings')
     list_filter = ('is_active',)
     search_fields = ('name',)
+
+
+def _show_key(modeladmin, request, agent, key):
+    modeladmin.message_user(
+        request,
+        f'New key for "{agent.name}": {key} — copy it now into JOHNCAD_AGENT_KEY in '
+        'the agent\'s config; it is stored hashed and won\'t be shown again.',
+        messages.WARNING,
+    )
+
+
+@admin.action(description='Generate a new key (the old one stops working)')
+def regenerate_keys(modeladmin, request, queryset):
+    for agent in queryset:
+        key = agent.set_new_key()
+        agent.save(update_fields=['key_hash', 'key_hint'])
+        _show_key(modeladmin, request, agent, key)
+
+
+@admin.register(PrinterAgent)
+class PrinterAgentAdmin(admin.ModelAdmin):
+    list_display = ('name', 'key_hint', 'is_active', 'handles_unassigned', 'last_seen_at')
+    list_filter = ('is_active',)
+    filter_horizontal = ('printers',)
+    readonly_fields = ('key_hint', 'created_at', 'last_seen_at')
+    actions = [regenerate_keys]
+
+    def save_model(self, request, obj, form, change):
+        key = None if change else obj.set_new_key()
+        super().save_model(request, obj, form, change)
+        if key:
+            _show_key(self, request, obj, key)

@@ -224,6 +224,18 @@ BAMBUDDY_PRINTER_ID = os.environ.get('BAMBUDDY_PRINTER_ID', '')
 BAMBUDDY_STAGED = os.environ.get('BAMBUDDY_STAGED', 'True') == 'True'
 BAMBUDDY_TIMEOUT = int(os.environ.get('BAMBUDDY_TIMEOUT', '60'))
 
+# Print agent (jobs/agent_api.py, agent/). True when this site is NOT next to
+# Bambuddy (e.g. hosted at home) and a print agent on the printers' network
+# pulls jobs from /agent-api/ over HTTPS instead. Then the dispatch_worker
+# isn't used and "release next" is handed to the agent. Agents and their keys
+# are managed in /admin/.
+BAMBUDDY_VIA_AGENT = os.environ.get('BAMBUDDY_VIA_AGENT', 'False') == 'True'
+# A job an agent claimed but stopped downloading (no request for its file) is
+# offered again after this many seconds.
+AGENT_CLAIM_TIMEOUT = int(os.environ.get('AGENT_CLAIM_TIMEOUT', '900'))
+# How often agents should poll, sent to them in every poll response.
+AGENT_POLL_INTERVAL = int(os.environ.get('AGENT_POLL_INTERVAL', '15'))
+
 
 # Logging
 

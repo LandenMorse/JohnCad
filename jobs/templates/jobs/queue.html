@@ -5,14 +5,30 @@
 <p class="subtitle">Jobs currently queued or being printed.</p>
 
 {% if user.is_staff %}
+{% if via_agent %}
+<div class="card">
+    {% for agent in agents %}
+    <p>Print agent <strong>{{ agent.name }}</strong>:
+        {% if not agent.last_seen_at %}has never checked in.
+        {% else %}last checked in {{ agent.last_seen_at|timesince }} ago.{% endif %}
+    </p>
+    {% empty %}
+    <p class="subtitle">No print agent is set up yet (add one in /admin/), so jobs can't reach the printers.</p>
+    {% endfor %}
+</div>
+{% endif %}
 <div class="card">
     {% for staged in next_staged %}
-    <p>{% if staged.printer %}<strong>{{ staged.printer.name }}</strong> &mdash; {% endif %}Next up: <strong>{{ staged.attachment.name }}</strong> ({{ staged.user.username }}). Clear the build plate, then release it.</p>
+    <p>{% if staged.printer %}<strong>{{ staged.printer.name }}</strong> &mdash; {% endif %}Next up: <strong>{{ staged.attachment.name }}</strong> ({{ staged.user.username }}).
+        {% if staged.release_requested_at %}Release requested, waiting for the print agent to start it.{% else %}Clear the build plate, then release it.{% endif %}</p>
+    {% if staged.release_error %}<div class="error-detail">Last release failed: {{ staged.release_error }}</div>{% endif %}
+    {% if not staged.release_requested_at %}
     <form method="post" action="{% url 'queue-release-next' %}">
         {% csrf_token %}
         {% if staged.printer %}<input type="hidden" name="printer" value="{{ staged.printer.pk }}">{% endif %}
         <button type="submit" class="btn-success">Plate cleared{% if staged.printer %} on {{ staged.printer.name }}{% endif %}, release next</button>
     </form>
+    {% endif %}
     {% empty %}
     <p class="subtitle">No job is waiting for the plate to be cleared.</p>
     {% endfor %}
@@ -31,7 +47,7 @@
                 <td>{{ job.attachment.name }}</td>
                 <td>{{ job.user.username }}</td>
                 <td>{{ job.printer.name|default:"—" }}</td>
-                <td><span class="status-badge">{% if job.dispatch_state == 'staged' %}Waiting for plate clear{% elif job.dispatch_state == 'released' %}Starting{% else %}{{ job.get_status_display }}{% endif %}</span></td>
+                <td><span class="status-badge">{% if job.dispatch_state == 'staged' %}Waiting for plate clear{% elif job.dispatch_state == 'releasing' or job.dispatch_state == 'released' %}Starting{% else %}{{ job.get_status_display }}{% endif %}</span></td>
             </tr>
             {% empty %}
             <tr class="empty-row"><td colspan="4">Nothing in the queue right now.</td></tr>

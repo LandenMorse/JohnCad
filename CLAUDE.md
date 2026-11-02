@@ -14,7 +14,7 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 - Django 6.1 + Postgres, native `auth.User` (referred to as "Students" in
   product language, even though the underlying model is still
   `django.contrib.auth.User`).
-- Three Django apps, split by feature: `accounts` (Student identity, classes,
+- Three Django apps, split by feature (plus the standalone `agent/`): `accounts` (Student identity, classes,
   signup codes; depends on no other app),
   `attachments` (raw `.stl` upload), `jobs` (the print pipeline + Bambuddy
   dispatch and webhook). Dependency direction is one-way — `jobs` imports from `attachments`
@@ -104,8 +104,29 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `dispatch_error`, shown on `/review/` with a Retry button. The worker also
   polls each in-flight job's queue item (`GET /queue/<id>`) every 60s as a
   fallback for missed webhooks.
-- **Bambuddy client** (`jobs/bambuddy.py`): every Bambuddy API detail lives
-  here as constants, checked against Bambuddy's source (commit `98ecaf5`,
+- **Print agent** (`BAMBUDDY_VIA_AGENT=True`, `agent/README.md`): for a site
+  hosted away from the printers (e.g. home Pi 5, printers at school behind a
+  network that only allows outbound HTTPS). `agent/johncad_agent.py` (no
+  Django; needs `requests`, imports `jobs/bambuddy_client.py` from a repo
+  checkout; systemd `johncad-agent`, config `/etc/johncad-agent.env`) runs
+  next to Bambuddy and polls `/agent-api/v1/` (`jobs/agent_api.py`, state
+  changes in `jobs/dispatch.py` `agent_*`): claims sliced jobs (`Job.agent`,
+  claim kept alive by each file request, lapses after `AGENT_CLAIM_TIMEOUT`),
+  downloads with HTTP Range chunks + SHA-256, uploads/enqueues in Bambuddy,
+  reports `dispatched`/`dispatch-failed`. Reports are saved to disk until
+  delivered, so a job is never sent twice, and a lock allows one agent per
+  state dir. "Release next" only sets `Job.release_requested_at`; the agent
+  starts it and reports `released` or `release-failed` (`Job.release_error`,
+  shown on `/queue/`). Print status comes from the agent reading Bambuddy's
+  queue (`event`), not the webhook. `PrinterAgent` model (`/admin/`, or
+  `manage.py create_agent_key`): key `jca_...` stored as SHA-256, revocable,
+  optional printer scope. The API 404s unless agent mode is on, and the
+  `dispatch_worker` idles in agent mode. Under `/agent-api/`, not `/api/`, so
+  Caddy/nginx don't block it. Tested against a fake Bambuddy over real HTTP;
+  **not yet run against a real Bambuddy or the school network.**
+- **Bambuddy client** (`jobs/bambuddy_client.py`, no Django imports, shared
+  with the agent; `jobs/bambuddy.py` wraps it with settings and parses the
+  webhook): every Bambuddy API detail lives here as constants, checked against Bambuddy's source (commit `98ecaf5`,
   2026-10-22), not yet against a running instance. Base `/api/v1`, key in
   `X-API-Key`; upload `POST /library/files/` (multipart `file`, returns
   `id`); enqueue `POST /queue/` with `library_file_id`, `printer_id`,
@@ -143,6 +164,9 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 
 ## Still open / not implemented
 
+- **Print agent on real hardware**: run `--check` from the school Pi on the
+  school network (the domain must be reachable for it), then one job end to
+  end through a real Bambuddy.
 - **Run the Bambuddy calls against a live instance**: they're checked
   against Bambuddy's source only. Watch for the 409 that
   `POST /queue/<id>/start` returns when Bambuddy thinks the spool is short.

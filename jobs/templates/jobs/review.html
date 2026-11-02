@@ -60,7 +60,8 @@
                     {% elif job.slicing_state == 'failed' %}<span class="status-badge status-rejected">Slicing failed</span>
                     {% elif job.dispatch_state == 'waiting' or job.dispatch_state == 'dispatching' %}<span class="status-badge status-approved">Sending to printer&hellip;</span>
                     {% elif job.dispatch_state == 'failed' %}<span class="status-badge status-rejected">Sending failed</span>
-                    {% elif job.dispatch_state == 'staged' %}<span class="status-badge status-queued">Waiting for plate clear</span>
+                    {% elif job.dispatch_state == 'staged' %}<span class="status-badge status-queued">Waiting for plate clear</span>{% if job.release_error %}<div class="error-detail">Last release failed: {{ job.release_error }}</div>{% endif %}
+                    {% elif job.dispatch_state == 'releasing' %}<span class="status-badge status-queued">Starting&hellip;</span>
                     {% else %}<span class="status-badge status-{{ job.status }}">{{ job.get_status_display }}</span>{% endif %}
                 </td>
                 <td>

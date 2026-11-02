@@ -1,5 +1,6 @@
 from urllib.parse import urlencode
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect, render
@@ -11,7 +12,7 @@ from attachments.models import Attachment
 
 from .bambuddy import BambuddyError, BambuddyNotConfigured
 from .dispatch import next_staged_jobs, release_next, retry_dispatch
-from .models import Job, Printer
+from .models import Job, Printer, PrinterAgent
 from .services import approve_job, jobs_visible_to, reject_job
 
 
@@ -41,9 +42,15 @@ def queue(request):
     jobs = Job.objects.filter(
         status__in=[Job.Status.QUEUED, Job.Status.WORKING],
     ).select_related('user', 'attachment', 'printer').order_by('approved_at')
+    agents = []
+    if request.user.is_staff and settings.BAMBUDDY_VIA_AGENT:
+        agents = list(PrinterAgent.objects.filter(is_active=True))
     return render(request, 'jobs/queue.html', {
         'jobs': jobs,
         'next_staged': next_staged_jobs() if request.user.is_staff else [],
+        'via_agent': settings.BAMBUDDY_VIA_AGENT,
+        'agents': agents,
+        'agent_offline_after': settings.AGENT_POLL_INTERVAL * 4 + 30,
     })
 
 
@@ -68,7 +75,14 @@ def queue_release_next(request):
         messages.error(request, 'No job is waiting for the plate to be cleared.')
     else:
         where = f' on {job.printer.name}' if job.printer_id else ''
-        messages.success(request, f'Released "{job.attachment.name}"{where}.')
+        if settings.BAMBUDDY_VIA_AGENT:
+            messages.success(
+                request,
+                f'Release of "{job.attachment.name}"{where} requested; the print '
+                'agent will start it on its next check-in.',
+            )
+        else:
+            messages.success(request, f'Released "{job.attachment.name}"{where}.')
     return redirect('queue')
 
 

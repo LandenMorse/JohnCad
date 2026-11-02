@@ -1,0 +1,17 @@
+# /etc/systemd/system/johncad-agent.service on the school Pi.
+# Replace <user> and the repo path. Config: /etc/johncad-agent.env.
+[Unit]
+Description=JohnCad print agent (pulls jobs from the JohnCad site into Bambuddy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=<user>
+EnvironmentFile=/etc/johncad-agent.env
+ExecStart=/usr/bin/python3 /home/<user>/JohnCad/agent/johncad_agent.py
+StateDirectory=johncad-agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

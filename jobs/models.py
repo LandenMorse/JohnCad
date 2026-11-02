@@ -1,5 +1,9 @@
+import hashlib
+import secrets
+
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 def job_sliced_file_upload_path(instance, filename):
@@ -107,6 +111,19 @@ class Job(models.Model):
     dispatch_started_at = models.DateTimeField(null=True, blank=True)
     dispatch_error = models.TextField(blank=True)
     dispatched_at = models.DateTimeField(null=True, blank=True)
+    # The print agent that claimed/dispatched this job (BAMBUDDY_VIA_AGENT).
+    agent = models.ForeignKey(
+        'PrinterAgent',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handled_jobs',
+    )
+    # With a print agent, "plate cleared, release next" only records the
+    # request; the agent starts the print and confirms (released_at) or
+    # reports why it couldn't (release_error, e.g. spool too short).
+    release_requested_at = models.DateTimeField(null=True, blank=True)
+    release_error = models.TextField(blank=True)
     # Set when staff click "plate cleared, release next" and Bambuddy starts it.
     released_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -132,15 +149,92 @@ class Job(models.Model):
     @property
     def dispatch_state(self):
         """For a queued job: 'waiting' / 'dispatching' / 'failed' before it
-        reaches Bambuddy, then 'staged' (waiting for the plate to be cleared)
-        and 'released'. Else ''."""
+        reaches Bambuddy, then 'staged' (waiting for the plate to be cleared),
+        'releasing' (release asked of the print agent) and 'released'.
+        Else ''."""
         if self.status != self.Status.QUEUED:
             return ''
         if self.dispatch_error:
             return 'failed'
         if not self.bambuddy_queue_id:
             return 'dispatching' if self.dispatch_started_at else 'waiting'
-        return 'released' if self.released_at else 'staged'
+        if self.released_at:
+            return 'released'
+        return 'releasing' if self.release_requested_at else 'staged'
 
     def __str__(self):
         return f'Job #{self.id} ({self.attachment.name}, {self.user.username})'
+
+
+class PrinterAgent(models.Model):
+    """A print agent: the small program on the school Pi that pulls approved
+    jobs from this site over HTTPS and hands them to its local Bambuddy (see
+    agent/README.md). Only used with BAMBUDDY_VIA_AGENT=True.
+
+    It authenticates with an API key. Only a hash of the key is stored; the
+    key itself is shown once, when it's generated in /admin/ or by
+    `manage.py create_agent_key`.
+    """
+    KEY_PREFIX = 'jca_'
+
+    name = models.CharField(max_length=100, unique=True)
+    printers = models.ManyToManyField(
+        Printer,
+        blank=True,
+        related_name='agents',
+        help_text='Printers this agent prints for. Leave empty for all printers.',
+    )
+    handles_unassigned = models.BooleanField(
+        default=True,
+        help_text=(
+            'Also take jobs with no printer chosen (they go to the agent\'s '
+            'BAMBUDDY_PRINTER_ID).'
+        ),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Untick to block this agent (its key stops working).',
+    )
+    key_hash = models.CharField(max_length=64, unique=True, editable=False)
+    key_hint = models.CharField(
+        max_length=16, editable=False,
+        help_text='Start of the key, to tell keys apart.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    @staticmethod
+    def hash_key(key):
+        return hashlib.sha256(key.encode()).hexdigest()
+
+    def set_new_key(self):
+        """Give the agent a new random key (replacing any old one) and return
+        it. The caller must save() and show the key; it can't be recovered."""
+        key = self.KEY_PREFIX + secrets.token_urlsafe(32)
+        self.key_hash = self.hash_key(key)
+        self.key_hint = key[:len(self.KEY_PREFIX) + 6]
+        return key
+
+    @classmethod
+    def for_key(cls, key):
+        """The active agent with this key, or None."""
+        if not key or not key.startswith(cls.KEY_PREFIX):
+            return None
+        return cls.objects.filter(key_hash=cls.hash_key(key), is_active=True).first()
+
+    def jobs_in_scope(self):
+        """Jobs this agent may see and act on."""
+        printer_ids = list(self.printers.values_list('pk', flat=True))
+        if not printer_ids:
+            scope = Q(printer__isnull=False)
+        else:
+            scope = Q(printer_id__in=printer_ids)
+        if self.handles_unassigned:
+            scope |= Q(printer__isnull=True)
+        return Job.objects.filter(scope)

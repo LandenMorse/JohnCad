@@ -16,6 +16,13 @@ Student upload → teacher approves (/review/) → slice_worker (OrcaSlicer, .gc
 
 Django never talks to printers, only to Bambuddy.
 
+**Alternative: print agent.** If the school network only allows outbound
+HTTPS (no Tailscale, no tunnel), keep the site at home and put Bambuddy plus
+the print agent on a Pi at school. The agent pulls jobs from the site over
+port 443 (`BAMBUDDY_VIA_AGENT=True`; see `agent/README.md`), so none of the
+network setup below is needed. The only thing to ask IT for is that the site's
+domain is reachable.
+
 ## Network (school site)
 
 - Printers sit behind a **GL.iNet travel router** that joins the school guest

@@ -1,13 +1,19 @@
 """Sending sliced jobs to Bambuddy and syncing their print status back.
 
-Used by the `dispatch_worker` command, the Bambuddy webhook and the staff
-buttons. All Bambuddy API details live in jobs/bambuddy.py.
+Two ways to reach Bambuddy:
+- Local (default): the `dispatch_worker` command, the Bambuddy webhook and
+  the staff buttons call Bambuddy directly. All Bambuddy API details live in
+  jobs/bambuddy_client.py.
+- Print agent (BAMBUDDY_VIA_AGENT=True): this site is elsewhere (e.g. at
+  home) and an agent next to Bambuddy pulls work from jobs/agent_api.py. The
+  agent_* functions below are its side of the state machine.
 """
 import logging
 from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from . import bambuddy
@@ -116,6 +122,8 @@ def retry_dispatch(job):
         bambuddy_queue_id='',
         dispatched_at=None,
         released_at=None,
+        release_requested_at=None,
+        release_error='',
         working_at=None,
         failed_at=None,
     ))
@@ -147,10 +155,22 @@ def next_staged_jobs():
 def release_next(printer=None):
     """Staff "plate cleared, release next" for one printer. Returns the
     released job, or None if nothing is waiting there. Raises bambuddy errors
-    for the view to show."""
+    for the view to show.
+
+    With a print agent this only records the request (the agent starts the
+    print on its next poll); asking again before it has is a no-op.
+    """
     job = next_staged_job(printer)
     if job is None:
         return None
+    if settings.BAMBUDDY_VIA_AGENT:
+        if job.release_requested_at is None:
+            now = timezone.now()
+            Job.objects.filter(pk=job.pk, release_requested_at__isnull=True).update(
+                release_requested_at=now, release_error='',
+            )
+            job.release_requested_at = now
+        return job
     bambuddy.start_item(job.bambuddy_queue_id)
     Job.objects.filter(pk=job.pk).update(released_at=timezone.now())
     return job
@@ -192,15 +212,154 @@ def sync_from_bambuddy():
     changed = 0
     for job in jobs:
         event = bambuddy.queue_item_event(job.bambuddy_queue_id)
-        if event == 'missing':
+        if event == bambuddy.MISSING:
             logger.warning('Job #%s: Bambuddy queue item %s no longer exists.',
                            job.id, job.bambuddy_queue_id)
             continue
         if event is None:
             continue
-        # A missed "started" means a completed job may still be queued here.
-        if event == 'completed' and job.status == Job.Status.QUEUED:
-            apply_event(job, 'started')
-        if apply_event(job, event) == APPLIED:
+        if apply_polled_event(job, event) == APPLIED:
             changed += 1
     return changed
+
+
+def apply_polled_event(job, event, detail=''):
+    """apply_event() for a status read from Bambuddy's queue rather than a
+    webhook: polls can miss "started", so a job can go straight from queued
+    to completed."""
+    if event == 'completed' and job.status == Job.Status.QUEUED:
+        apply_event(job, 'started')
+    return apply_event(job, event, detail)
+
+
+# --- Print agent (BAMBUDDY_VIA_AGENT) ---------------------------------------
+
+def reset_stale_agent_claims():
+    """Offer again jobs an agent claimed but stopped downloading. Every
+    request for the job's file refreshes the claim."""
+    cutoff = timezone.now() - timedelta(seconds=settings.AGENT_CLAIM_TIMEOUT)
+    released = Job.objects.filter(
+        status=Job.Status.QUEUED,
+        bambuddy_queue_id='',
+        dispatch_started_at__lt=cutoff,
+    ).update(dispatch_started_at=None)
+    if released:
+        logger.warning('Released %s stale agent claim(s).', released)
+    return released
+
+
+def agent_dispatch_jobs(agent):
+    """Sliced jobs waiting to go to `agent`'s Bambuddy: unclaimed ones, plus
+    ones this agent already claimed (so it can resume after a restart)."""
+    return (
+        agent.jobs_in_scope()
+        .filter(status=Job.Status.QUEUED, bambuddy_queue_id='', dispatch_error='')
+        .filter(Q(dispatch_started_at__isnull=True) | Q(agent=agent))
+        .exclude(sliced_file='')
+        .select_related('printer')
+        .order_by('approved_at', 'id')
+    )
+
+
+def agent_release_jobs(agent):
+    """Staged jobs staff asked `agent` to start."""
+    return (
+        agent.jobs_in_scope()
+        .filter(status=Job.Status.QUEUED, released_at__isnull=True,
+                release_requested_at__isnull=False)
+        .exclude(bambuddy_queue_id='')
+        .order_by('release_requested_at', 'id')
+    )
+
+
+def agent_track_jobs(agent):
+    """In-flight jobs whose Bambuddy queue item `agent` should report on."""
+    return (
+        agent.jobs_in_scope()
+        .filter(status__in=[Job.Status.QUEUED, Job.Status.WORKING])
+        .exclude(bambuddy_queue_id='')
+        .order_by('dispatched_at', 'id')
+    )
+
+
+def agent_claim(agent, job):
+    """Claim a job for `agent` to download and dispatch. Re-claiming a job it
+    already holds just refreshes the claim. Returns False if the job isn't
+    available to it (taken by another agent, dispatched, failed, ...)."""
+    return bool(
+        agent_dispatch_jobs(agent).filter(pk=job.pk).update(
+            agent=agent, dispatch_started_at=timezone.now(),
+        )
+    )
+
+
+def agent_holds_claim(agent, job):
+    """True while `agent` may download this job's file; refreshes the claim."""
+    return bool(
+        Job.objects.filter(
+            pk=job.pk,
+            agent=agent,
+            status=Job.Status.QUEUED,
+            bambuddy_queue_id='',
+            dispatch_started_at__isnull=False,
+        ).update(dispatch_started_at=timezone.now())
+    )
+
+
+def agent_report_dispatched(job, file_id, queue_id):
+    """The agent uploaded and enqueued the job. Returns APPLIED, UNCHANGED (a
+    repeat of the same report) or CONFLICT."""
+    if job.status == Job.Status.QUEUED and job.bambuddy_queue_id == queue_id:
+        return UNCHANGED
+    updated = Job.objects.filter(
+        pk=job.pk, status=Job.Status.QUEUED, bambuddy_queue_id='',
+    ).update(
+        bambuddy_file_id=file_id,
+        bambuddy_queue_id=queue_id,
+        dispatched_at=timezone.now(),
+        dispatch_started_at=None,
+        dispatch_error='',
+    )
+    if not updated:
+        return CONFLICT
+    logger.info('Job #%s sent to Bambuddy by the print agent (queue item %s).', job.id, queue_id)
+    return APPLIED
+
+
+def agent_report_dispatch_failed(job, message, file_id=None):
+    """The agent couldn't dispatch the job; shown on /review/ with Retry.
+    `file_id` updates the stored Bambuddy file id ('' forgets it, so a retry
+    uploads the file again). Returns False if the job had moved on."""
+    fields = {'dispatch_error': message or 'The print agent could not send the job.',
+              'dispatch_started_at': None}
+    if file_id is not None:
+        fields['bambuddy_file_id'] = file_id
+    updated = Job.objects.filter(
+        pk=job.pk, status=Job.Status.QUEUED, bambuddy_queue_id='',
+    ).update(**fields)
+    if updated:
+        logger.error('Job #%s dispatch failed on the print agent: %s', job.id, message)
+    return bool(updated)
+
+
+def agent_report_released(job):
+    """The agent started the staged print. Returns False if there was no
+    release to confirm."""
+    return bool(
+        Job.objects.filter(
+            pk=job.pk, status__in=[Job.Status.QUEUED, Job.Status.WORKING],
+            released_at__isnull=True, release_requested_at__isnull=False,
+        ).update(released_at=timezone.now(), release_error='')
+    )
+
+
+def agent_report_release_failed(job, message):
+    """The agent couldn't start the print (e.g. Bambuddy thinks the spool is
+    short). Clears the request so staff can try again from /queue/."""
+    return bool(
+        Job.objects.filter(
+            pk=job.pk, status=Job.Status.QUEUED, released_at__isnull=True,
+            release_requested_at__isnull=False,
+        ).update(release_requested_at=None,
+                 release_error=message or 'The print agent could not start the print.')
+    )
