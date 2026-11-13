@@ -1,0 +1,34 @@
+# Weekly dependency update PRs. Minor and patch updates are grouped into one
+# PR per ecosystem so the queue stays small; major versions come separately.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Moving Postgres to a new major version needs a dump and restore of
+      # the data volume, so it is done by hand (docs/operations.md).
+      - dependency-name: postgres
+        update-types: [version-update:semver-major]
