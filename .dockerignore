@@ -12,3 +12,5 @@ db.sqlite3
 docker-compose.yml
 Dockerfile
 .dockerignore
+backups/
+private_media.before-restore-*/

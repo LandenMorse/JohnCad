@@ -1,0 +1,3 @@
+# The scripts pass sh -c snippets to the db container on purpose: the
+# variables in them are expanded there, not here.
+disable=SC2016
