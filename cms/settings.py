@@ -52,6 +52,13 @@ if os.environ.get('HTTPS_ENABLED', 'False') == 'True':
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 
+# `manage.py check --deploy` (run in CI) warns about these two, but the proxy
+# in front of gunicorn already does both jobs, so Django doesn't repeat them:
+#   W004 HSTS header    -> nginx/johncad.host.conf sets it (the Caddy/frp
+#                          setup in deploy/frp does not send HSTS)
+#   W008 HTTPS redirect -> nginx/johncad.host.conf; Caddy does it by default
+SILENCED_SYSTEM_CHECKS = ['security.W004', 'security.W008']
+
 # Large .stl uploads shouldn't be rejected by Django's default 2.5MB cap;
 # keep in sync with nginx's client_max_body_size.
 DATA_UPLOAD_MAX_MEMORY_SIZE = 512 * 1024 * 1024
