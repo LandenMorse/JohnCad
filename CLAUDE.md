@@ -150,6 +150,33 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `entrypoint.sh`) for deployment to a Raspberry Pi hosting the site +
   Postgres + Bambuddy (`ghcr.io/maziggy/bambuddy`, port 8080, AGPL-3.0).
 
+## Development and operations
+
+- **Run the checks CI runs** before finishing a change: `ruff check .`,
+  `python manage.py test` (works from a clean clone; SQLite via
+  `DATABASE_ENGINE=sqlite` is fine locally, CI uses Postgres 16),
+  `python manage.py makemigrations --check --dry-run`, and
+  `shellcheck -x scripts/*.sh entrypoint.sh` if a script changed. Details:
+  `CONTRIBUTING.md`.
+- **CI** (`.github/workflows/ci.yml`): lint, Postgres tests with deprecation
+  warnings as errors, `check --deploy`, `pip-audit`, Docker build, and an
+  install drill that runs `scripts/setup-pi.sh` twice and then
+  `scripts/restore-drill.sh` on a clean Ubuntu runner.
+- **Tests** use `cms/test_runner.py` (plain static storage, temporary
+  `MEDIA_ROOT`). `jobs/test_agent.py` is skipped on Windows (`fcntl`).
+- **Settings**: `DEBUG` defaults to `False`; without `DEBUG=True` the app
+  won't start unless `SECRET_KEY` is set to a real value.
+- **Install and operate** with `scripts/`: `setup-pi.sh` (one-command Pi
+  install, idempotent), `update.sh` (backup, pull, migrate, restart, check
+  `/healthz/`), `backup.sh`/`restore.sh` (Postgres dump + `private_media`
+  archive). systemd units live in `deploy/systemd/`. Runbook:
+  `docs/operations.md`.
+- **Migrations must keep the previous release working** (rollback is a code
+  checkout, never a schema rollback): see `CONTRIBUTING.md`, "Database
+  migrations".
+- The scripts are **not yet run on a real Raspberry Pi**; CI covers Ubuntu
+  x86 without the OrcaSlicer Flatpak.
+
 ## Job status enum
 
 | Status     | Set by                             | Meaning |
@@ -178,5 +205,5 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   hand on `/review/` for now.
 - Pin the Bambuddy image version; pick one deployment path (the `web`
   container still can't slice).
-- Repo cleanup before open-sourcing: LICENSE, quick-start, configurable
-  domain settings (see `docs/BAMBUDDY_PLAN.md`).
+- Repo cleanup before open-sourcing: LICENSE, configurable domain settings
+  (see `docs/BAMBUDDY_PLAN.md`); HTTPS setup is still manual (README).
