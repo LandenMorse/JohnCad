@@ -1,0 +1,7 @@
+# Review is required from the maintainer for everything, and in particular
+# for what can break or expose a running install.
+*                       @LandenMorse
+/.github/               @LandenMorse
+/scripts/               @LandenMorse
+/deploy/                @LandenMorse
+/cms/settings.py        @LandenMorse
