@@ -11,8 +11,10 @@ from accounts.permissions import classes_visible_to, staff_required
 from attachments.models import Attachment
 
 from .bambuddy import BambuddyError, BambuddyNotConfigured
+from . import printer_tickets
 from .dispatch import next_staged_jobs, release_next, retry_dispatch
-from .models import Job, Printer, PrinterAgent
+from .forms import AddPrinterTicketForm, PrinterFilamentsForm
+from .models import AddPrinterTicket, Job, Printer, PrinterAgent
 from .services import approve_job, jobs_visible_to, reject_job
 
 
@@ -167,3 +169,73 @@ def review_retry_dispatch(request, pk):
     else:
         messages.error(request, f'Job #{job.id} can no longer be retried.')
     return _back_to_review(request)
+
+
+TICKET_HISTORY = 25
+
+
+@staff_required
+def printers(request):
+    """Teachers add printers here and see how earlier requests went. Adding
+    one files an AddPrinterTicket, which the print agent carries out."""
+    if request.method == 'POST':
+        form = AddPrinterTicketForm(request.POST)
+        if form.is_valid():
+            ticket = form.save(commit=False)
+            ticket.requested_by = request.user
+            ticket.save()
+            messages.success(
+                request,
+                f'Request to add "{ticket.name}" sent. The print agent will add it on its '
+                'next check-in; this page shows when it is done.',
+            )
+            return redirect('printers')
+    else:
+        form = AddPrinterTicketForm()
+
+    printer_tickets.reset_stale_claims()
+    tickets = list(
+        AddPrinterTicket.objects.select_related('printer_model', 'requested_by', 'printer')[:TICKET_HISTORY]
+    )
+    printer_list = list(
+        Printer.objects.select_related('printer_model').prefetch_related('filament_slots__filament')
+    )
+    for printer in printer_list:
+        printer.filaments_form = PrinterFilamentsForm(printer=printer, prefix=f'printer-{printer.pk}')
+    return render(request, 'jobs/printers.html', {
+        'form': form,
+        'tickets': tickets,
+        'printers': printer_list,
+        'via_agent': settings.BAMBUDDY_VIA_AGENT,
+        'agents': list(PrinterAgent.objects.filter(is_active=True)),
+        # Don't reload the page under someone who is filling the form in.
+        'auto_refresh': request.method == 'GET' and any(ticket.is_open for ticket in tickets),
+    })
+
+
+@staff_required
+@require_POST
+def printer_ticket_cancel(request, pk):
+    ticket = get_object_or_404(AddPrinterTicket, pk=pk)
+    if printer_tickets.cancel(ticket):
+        messages.success(request, f'Request to add "{ticket.name}" cancelled.')
+    else:
+        messages.error(
+            request,
+            f'The request to add "{ticket.name}" has already been picked up or finished.',
+        )
+    return redirect('printers')
+
+
+@staff_required
+@require_POST
+def printer_filaments(request, pk):
+    """Record which filament is loaded in each slot of a printer."""
+    printer = get_object_or_404(Printer, pk=pk)
+    form = PrinterFilamentsForm(request.POST, printer=printer, prefix=f'printer-{printer.pk}')
+    if form.is_valid():
+        form.save()
+        messages.success(request, f'Filaments for {printer.name} saved.')
+    else:
+        messages.error(request, f'Could not save the filaments for {printer.name}.')
+    return redirect('printers')

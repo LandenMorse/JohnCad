@@ -11,4 +11,7 @@ urlpatterns = [
     path('jobs/<int:pk>/released/', agent_api.released, name='agent-released'),
     path('jobs/<int:pk>/release-failed/', agent_api.release_failed, name='agent-release-failed'),
     path('jobs/<int:pk>/event/', agent_api.event, name='agent-event'),
+    path('printer-tickets/<int:pk>/claim/', agent_api.printer_ticket_claim, name='agent-printer-ticket-claim'),
+    path('printer-tickets/<int:pk>/done/', agent_api.printer_ticket_done, name='agent-printer-ticket-done'),
+    path('printer-tickets/<int:pk>/failed/', agent_api.printer_ticket_failed, name='agent-printer-ticket-failed'),
 ]

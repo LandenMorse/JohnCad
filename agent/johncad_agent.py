@@ -22,6 +22,9 @@ Configuration is read from the environment (see johncad-agent.env.example):
   AGENT_CHUNK_MB       download chunk size, default 4
   AGENT_POLL_INTERVAL  seconds; default: whatever the site says (15)
   BAMBUDDY_TIMEOUT     seconds, default 60
+  AGENT_PRINTER_CONNECT_TIMEOUT
+                       seconds to wait for Bambuddy to connect to a printer a
+                       teacher asked to add, default 60
   AGENT_LOG_LEVEL      default INFO
 """
 import argparse
@@ -51,6 +54,7 @@ log = logging.getLogger('johncad-agent')
 API_PATH = '/agent-api/v1/'
 MAX_BACKOFF = 300
 DOWNLOAD_TRIES = 5
+CONNECT_CHECK_EVERY = 3     # seconds between "is the new printer connected?" checks
 
 
 class HomeError(Exception):
@@ -78,6 +82,7 @@ class Config:
         interval = env.get('AGENT_POLL_INTERVAL', '').strip()
         self.poll_interval = float(interval) if interval else None
         self.bambuddy_timeout = int(env.get('BAMBUDDY_TIMEOUT', '60'))
+        self.printer_connect_timeout = int(env.get('AGENT_PRINTER_CONNECT_TIMEOUT', '60'))
         self.log_level = env.get('AGENT_LOG_LEVEL', 'INFO').upper()
 
     def problems(self):
@@ -175,12 +180,16 @@ class State:
         tmp.write_text(json.dumps({'outbox': self.outbox}, indent=1))
         os.replace(tmp, self.path)
 
-    def queue_report(self, job_id, path, body):
-        self.outbox.append({'job': job_id, 'path': path, 'body': body})
+    def queue_report(self, job_id, path, body, ticket=None):
+        """Queue a report about a job, or (job_id None) about a printer ticket."""
+        self.outbox.append({'job': job_id, 'ticket': ticket, 'path': path, 'body': body})
         self.save()
 
     def busy_jobs(self):
-        return {item['job'] for item in self.outbox}
+        return {item['job'] for item in self.outbox if item.get('job') is not None}
+
+    def busy_tickets(self):
+        return {item['ticket'] for item in self.outbox if item.get('ticket') is not None}
 
 
 class Agent:
@@ -227,6 +236,13 @@ class Agent:
         for item in work.get('track', []):
             if item['id'] not in busy:
                 self.track(item)
+        # Last, because waiting for a new printer to connect can take a minute
+        # and prints shouldn't wait behind it.
+        busy_tickets = self.state.busy_tickets()
+        for item in work.get('printer_tickets', []):
+            if item['id'] not in busy_tickets:
+                self.add_printer(item)
+        self.flush_outbox()
         return self.config.poll_interval or float(work.get('poll_interval') or 15)
 
     def flush_outbox(self):
@@ -239,7 +255,7 @@ class Agent:
             except HomeError as exc:
                 if exc.status is None or exc.status >= 500 or exc.status == 401:
                     raise
-                log.warning('Site rejected report for job #%s, dropping it: %s', item['job'], exc)
+                log.warning('Site rejected report %s, dropping it: %s', item['path'], exc)
             self.state.outbox.pop(0)
             self.state.save()
 
@@ -356,6 +372,79 @@ class Agent:
                 log.warning('Job #%s chunk %s-%s failed (%s); retrying in %ss.',
                             job_id, start, end, exc, delay)
                 time.sleep(delay)
+
+    # -- adding printers ------------------------------------------------------
+
+    def add_printer(self, item):
+        """Carry out a teacher's "add printer" request: register the printer
+        with Bambuddy, wait until Bambuddy is connected to it, and report its
+        Bambuddy id (or why it couldn't be added)."""
+        ticket_id, name, serial = item['id'], item['name'], item['serial_number']
+        try:
+            self.home.post(f'printer-tickets/{ticket_id}/claim/')
+        except HomeError as exc:
+            if exc.status in (404, 409):
+                log.info('Printer request #%s is no longer open: %s', ticket_id, exc)
+                return
+            raise
+
+        created = False
+        try:
+            # Look first: an earlier attempt may have added it and then been
+            # cut off before it could report.
+            printer_id = self.bambuddy.find_printer_id(serial)
+            if printer_id is None:
+                self.bambuddy.add_printer(name, item['ip_address'], item['access_code'], serial)
+                created = True
+                printer_id = self.bambuddy.find_printer_id(serial)
+                if printer_id is None:
+                    raise BambuddyError('Bambuddy accepted the printer but does not list it.')
+                log.info('Printer request #%s: "%s" added to Bambuddy as printer %s.',
+                         ticket_id, name, printer_id)
+            connected = self._wait_until_connected(printer_id)
+        except BambuddyError as exc:
+            # Never let the access code travel back in an error message.
+            message = str(exc).replace(item['access_code'], '********') if item['access_code'] else str(exc)
+            self.report_printer_failed(ticket_id, f'Bambuddy could not add the printer: {message}')
+            return
+
+        if not connected:
+            message = (
+                f'Bambuddy could not connect to the printer within '
+                f'{self.config.printer_connect_timeout} seconds. Check that the printer is on, '
+                'that LAN Mode is switched on, and the IP address, access code and serial number.'
+            )
+            if created:
+                # Take it out again so a corrected request starts clean.
+                try:
+                    self.bambuddy.delete_printer(printer_id)
+                except BambuddyError as exc:
+                    log.warning('Could not remove printer %s from Bambuddy: %s', printer_id, exc)
+                    message += f' It is still listed in Bambuddy (printer {printer_id}); remove it there.'
+            self.report_printer_failed(ticket_id, message)
+            return
+
+        log.info('Printer request #%s: "%s" is connected (Bambuddy printer %s).',
+                 ticket_id, name, printer_id)
+        self.state.queue_report(
+            None, f'printer-tickets/{ticket_id}/done/',
+            {'bambuddy_printer_id': printer_id}, ticket=ticket_id,
+        )
+
+    def _wait_until_connected(self, printer_id):
+        checks = max(self.config.printer_connect_timeout // CONNECT_CHECK_EVERY, 1)
+        for check in range(checks):
+            if self.bambuddy.printer_connected(printer_id):
+                return True
+            if check < checks - 1:
+                time.sleep(CONNECT_CHECK_EVERY)
+        return False
+
+    def report_printer_failed(self, ticket_id, message):
+        log.error('Printer request #%s: %s', ticket_id, message)
+        self.state.queue_report(
+            None, f'printer-tickets/{ticket_id}/failed/', {'error': message}, ticket=ticket_id,
+        )
 
     # -- release & status -----------------------------------------------------
 

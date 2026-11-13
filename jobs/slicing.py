@@ -25,18 +25,19 @@ OUTPUT_NAME = 'output.gcode.3mf'
 def _presets_for(job):
     """(machine+process presets, filament presets) to slice `job` with.
 
-    A printer with its own presets uses only those. One without (or a job with
+    A printer with a PrinterModel uses that model's presets and the filaments
+    loaded in the printer's slots, in slot order. One without (or a job with
     no printer) falls back to the ORCA_SLICER_* settings as a pair, so a
     printer's machine preset is never mixed with another printer's filaments.
     """
     printer = job.printer
-    if printer is not None and printer.slicer_settings:
-        return printer.slicer_settings, printer.slicer_filaments
+    if printer is not None and printer.printer_model_id:
+        return printer.printer_model.settings_path, printer.filament_preset_paths()
     if not settings.ORCA_SLICER_SETTINGS:
         if printer is not None:
             raise SlicerNotConfigured(
-                f'No slicer presets for printer "{printer.name}": set them on the '
-                'printer in /admin/ (or set ORCA_SLICER_SETTINGS).'
+                f'No slicer presets for printer "{printer.name}": give it a printer '
+                'model in /admin/ (or set ORCA_SLICER_SETTINGS).'
             )
         raise SlicerNotConfigured('ORCA_SLICER_SETTINGS is not set (machine/process presets).')
     return settings.ORCA_SLICER_SETTINGS, settings.ORCA_SLICER_FILAMENTS

@@ -33,16 +33,42 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
 - `Attachment` model (`attachments/models.py`): a Student's uploaded `.stl`
   file, `FileField`-backed, stored under `MEDIA_ROOT` (private — never
   mounted at a public URL, only reachable through authenticated views).
-- `Printer` model (`jobs/models.py`, managed in `/admin/`): name, Bambuddy
-  printer id, the OrcaSlicer preset paths for that printer's model, and an
-  `is_active` flag. A teacher picks one on `/review/` when approving
+- `PrinterModel` (name, `settings_path`: machine+process preset paths) and
+  `Filament` (`filament_type`, `color`, `preset_path`; type+color unique) are
+  added by hand in `/admin/`; no teacher forms for them.
+- `Printer` model (`jobs/models.py`): name, Bambuddy printer id,
+  `serial_number`, `printer_model` FK (nullable only for legacy printers), an
+  `is_active` flag, and up to 4 loaded filaments through `PrinterFilament`
+  (printer, filament, `slot` 1-4, unique per printer+slot). The old
+  `slicer_settings`/`slicer_filaments` text columns were converted by
+  migration 0008 and removed from the model **but not yet dropped from the
+  database** (they have a db default of `''`), so a rolled-back release still
+  works; drop them in a later release. A teacher picks a printer on `/review/` when approving
   (required once any active printer exists); it sets `Job.printer` (nullable,
   `PROTECT`). The printer decides the slicer presets (`jobs/slicing.py`
-  `_presets_for`: a printer's own presets replace `ORCA_SLICER_*` as a pair,
+  `_presets_for`: the printer model's presets plus the slot filaments in slot
+  order replace `ORCA_SLICER_*` as a pair,
   never mixed), the Bambuddy printer the job is enqueued on, and which
   "Plate cleared, release next" button (one per printer on `/queue/`) starts
   it. Jobs with no printer (older jobs, or no printers set up) use the
   `.env` settings, so single-printer setups keep working.
+- **Adding printers** (`/printers/`, staff only; `jobs/views.py`,
+  `jobs/forms.py`, state changes in `jobs/printer_tickets.py`): the form
+  creates an `AddPrinterTicket` (name, IP, access code, serial, printer model
+  FK; `pending -> adding -> succeeded/failed`, or `cancelled`). The agent gets
+  open tickets in `poll/` (`printer_tickets`), claims one
+  (`printer-tickets/<id>/claim/`), looks the serial up in Bambuddy (so a
+  retry never adds twice), `POST`s the printer, waits for
+  `GET /printers/<id>/status` `connected` (default 60s,
+  `AGENT_PRINTER_CONNECT_TIMEOUT`; deletes the printer it just created if it
+  never connects), and reports `done` (`bambuddy_printer_id`) or `failed`
+  through its on-disk outbox. `complete()` creates the `Printer`, links it to
+  the ticket and adds it to the agent's printer scope if the agent has one.
+  The access code is only sent to an authenticated agent and is blanked when
+  the ticket closes; it is never rendered. Stale claims are re-offered after
+  `AGENT_CLAIM_TIMEOUT`. The page also has per-printer filament slot pickers.
+  Agent side tested against a fake Bambuddy; **the Bambuddy printer endpoints
+  are from the API reference and not yet run against a live Bambuddy.**
 - `Job` model (`jobs/models.py`): one specific request to print a
   Student's `Attachment`. Status lifecycle: `pending -> approved -> queued ->
   working -> finished`, plus `rejected` (terminal, from `pending`) and
@@ -210,6 +236,13 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
 | `rejected` | Admin                               | Declined instead of approved; terminal |
 
 ## Still open / not implemented
+
+- Run an add-printer ticket end to end against the real Bambuddy on the
+  printer Pi (endpoint paths, the POST response, and which API key permission
+  adding printers needs are from the docs only).
+- Drop the unused `jobs_printer.slicer_settings` / `slicer_filaments` columns
+  in a later release (see migration 0008).
+- No teacher-facing way to rename, deactivate or remove a printer (admin only).
 
 - "Any X1C"-style automatic printer choice: teachers pick the printer by
   hand on `/review/` for now.

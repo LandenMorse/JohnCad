@@ -10,4 +10,7 @@ urlpatterns = [
     path('review/<int:pk>/approve/', views.review_approve, name='job-review-approve'),
     path('review/<int:pk>/reject/', views.review_reject, name='job-review-reject'),
     path('review/<int:pk>/retry-dispatch/', views.review_retry_dispatch, name='job-review-retry-dispatch'),
+    path('printers/', views.printers, name='printers'),
+    path('printers/<int:pk>/filaments/', views.printer_filaments, name='printer-filaments'),
+    path('printers/tickets/<int:pk>/cancel/', views.printer_ticket_cancel, name='printer-ticket-cancel'),
 ]

@@ -451,3 +451,7 @@ button.btn-ghost:hover { border-color: var(--accent); color: var(--accent-strong
 .auth-footer { text-align: center; margin-top: 1rem; color: var(--muted); font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.02em; }
 .auth-footer a { color: var(--accent-strong); text-decoration: none; }
 .auth-footer a:hover { text-decoration: underline; }
+
+/* /printers/: one row of slot pickers per printer */
+.filament-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.6rem 1rem; }
+.filament-form label { display: flex; flex-direction: column; gap: 0.2rem; }

@@ -17,7 +17,8 @@
                 <span class="username">{{ user.username }}</span>
                 <a href="{% url 'queue' %}">Queue</a>
                 <a href="{% url 'classroom-list' %}">Classes</a>
-                {% if user.is_staff %}<a href="{% url 'job-review' %}">Review</a>{% endif %}
+                {% if user.is_staff %}<a href="{% url 'job-review' %}">Review</a>
+                <a href="{% url 'printers' %}">Printers</a>{% endif %}
                 {% if user.is_superuser %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
                 <form class="logout-form" method="post" action="{% url 'logout' %}">
                     {% csrf_token %}

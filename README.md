@@ -296,14 +296,18 @@ Docker and the print agent as a service. The full steps are in
 
 1. **Site Pi:** create the agent's key in `/admin/` > **Printer agents**
    (or `python manage.py create_agent_key school-pi`).
-2. **Printer Pi:** clone JohnCad, run `docker compose up -d bambuddy`, add
-   the printers in Bambuddy (LAN Mode on) and print one `.gcode.3mf` by hand,
+2. **Printer Pi:** clone JohnCad, run `docker compose up -d bambuddy`,
    create a Bambuddy API key, put both keys and the site's address in
    `/etc/johncad-agent.env`, and install the `johncad-agent` service.
-3. **Site Pi, `/admin/` > Printers:** add each printer: a name teachers will
-   see, its Bambuddy printer id, and the OrcaSlicer machine + process preset
-   `.json` paths for that printer's model. Teachers then choose the printer
-   when approving a job on `/review/`.
+3. **Site Pi, `/admin/`** (once per kind of printer and filament): add a
+   **Printer model** (a name, and the OrcaSlicer machine + process preset
+   `.json` paths) and the **Filaments** you stock (type, color, and the
+   filament preset `.json` path).
+4. **Teachers add the printers** on the **Printers** page (`/printers/`):
+   name, model, IP address, access code and serial number. The print agent
+   adds the printer to Bambuddy and the page shows when it is connected and
+   ready. Teachers also set which filament is in each slot there, and choose
+   the printer when approving a job on `/review/`.
 
 The printer Pi needs outbound HTTPS to the site's domain and nothing else; ask
 school IT to allow that domain if it is blocked. More on the network and the
@@ -449,6 +453,20 @@ The raw file a Student uploads.
 One Attachment can have many `Job`s (a Student can export/request-print the
 same file more than once).
 
+### `PrinterModel`, `Filament`, `Printer`
+
+| Model | Fields | Notes |
+|---|---|---|
+| `PrinterModel` | `name`, `settings_path` | A kind of printer and its OrcaSlicer machine + process preset paths (`;`-separated). Added in `/admin/` |
+| `Filament` | `filament_type`, `color`, `preset_path` | A filament and its OrcaSlicer filament preset. Type + color is unique. Added in `/admin/` |
+| `Printer` | `name`, `bambuddy_printer_id`, `serial_number`, `printer_model` (FK), `is_active` | Created by a successful add-printer ticket. Its IP address and access code are kept by Bambuddy, not here |
+| `PrinterFilament` | `printer` (FK), `filament` (FK), `slot` (1-4) | Which filament is loaded in each slot; one row per used slot. Slot order is the order the slicer gets the presets in |
+| `AddPrinterTicket` | `name`, `ip_address`, `access_code`, `serial_number`, `printer_model` (FK), `status`, `error`, `bambuddy_printer_id`, `printer`, `requested_by`, `agent`, timestamps | A teacher's request to add a printer. Status: `pending -> adding -> succeeded`/`failed`, or `cancelled` |
+
+A job slices with its printer's `PrinterModel` presets and slot filaments. A
+printer with no model (from before models existed) uses `ORCA_SLICER_SETTINGS`
+and `ORCA_SLICER_FILAMENTS` from `.env`.
+
 ### `Job`
 
 One specific request to print an `Attachment`. This is the thing that
@@ -570,6 +588,24 @@ by a crashed worker are released after `ORCA_SLICER_TIMEOUT` + 60s.
 generated `.gcode.3mf` (`--export-3mf`) into `job.sliced_file`, and advances
 the job to `queued`. No shell interpolation (`shell=True`) is used. Configurable via
 the `ORCA_SLICER_*` env vars above.
+
+### Printers page (`/printers/`, teachers only)
+
+Teachers add a printer by filling in its name, model, IP address, LAN access
+code and serial number. That files an **add-printer ticket**
+(`AddPrinterTicket`), because the site can't reach the school network itself.
+The print agent picks the ticket up on its next check-in, adds the printer to
+Bambuddy, waits until Bambuddy is connected to it, and reports Bambuddy's id
+for it; the site then creates the `Printer`. The page lists earlier requests
+with their status (waiting, adding, added, or failed with the reason, such as
+a wrong access code) and refreshes by itself while one is in progress. A
+request the agent hasn't started on can be cancelled. The access code is
+never shown again and is erased from the ticket as soon as it is closed.
+
+The same page lists the printers, with a row of pickers for the filament
+loaded in each of a printer's four slots. Printer models and filaments
+themselves are added by an admin in `/admin/`. Logic:
+`jobs/printer_tickets.py`, `jobs/forms.py`.
 
 ### Public print queue (`/queue/`)
 

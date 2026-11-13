@@ -57,15 +57,18 @@ only moves finished files.
    leaked key: the admin action **Generate a new key**, or
    `create_agent_key school-pi --rotate`. Unticking **Is active** blocks the
    agent immediately.
-5. Add each printer under `/admin/` > **Printers**: a name teachers will
-   see, its **Bambuddy printer id** (the id in the *printer* Pi's Bambuddy,
-   shown at `http://<printer pi>:8080/docs` under `GET /api/v1/printers/`),
-   and the OrcaSlicer machine + process preset `.json` paths (`;`-separated)
-   for that printer's model, plus filament presets if needed. Teachers then
-   choose the printer when approving a job on `/review/`; it decides the
-   slicer presets and where the job is sent. Until you add a printer, jobs
-   use `ORCA_SLICER_SETTINGS` from `.env` and the agent's
-   `BAMBUDDY_PRINTER_ID` (single-printer setup).
+5. In `/admin/`, add a **Printer model** for each kind of printer (a name
+   and the OrcaSlicer machine + process preset `.json` paths, `;`-separated)
+   and a **Filament** for each filament you stock (type, color, filament
+   preset `.json` path).
+6. Once the agent is running (next section), teachers add printers on the
+   site's **Printers** page (`/printers/`): name, model, IP address, access
+   code and serial number. The agent adds the printer to its Bambuddy, waits
+   until Bambuddy is connected to it, and reports back; the page shows
+   "Added", or the reason it failed. Teachers then choose the printer when
+   approving a job on `/review/`; it decides the slicer presets and where the
+   job is sent. Until a printer exists, jobs use `ORCA_SLICER_SETTINGS` from
+   `.env` and the agent's `BAMBUDDY_PRINTER_ID` (single-printer setup).
 
 Caddy needs no change. The agent API is under `/agent-api/`, not `/api/`, so
 `respond /api/* 404` doesn't block it. It returns 404 unless
@@ -92,12 +95,13 @@ to be allowed for the Pi first (ask IT; the agent can't work around it).
    ```
 2. **Bambuddy** (needs Docker): `docker compose up -d bambuddy` from the
    checkout starts only Bambuddy (`docker-compose.yml` also has the site's
-   database, which you don't start here). Open `http://<printer pi>:8080`, add
-   the printers (LAN Mode on, printer auto-updates off), **hand-upload and
-   print one `.gcode.3mf`** to check the printer accepts it, and create an API
-   key (Settings > API keys) with **Manage library**, **Add to queue** and
-   **Read status**. There is no webhook to set up; the agent reads print
-   status from Bambuddy's queue. Pin `BAMBUDDY_VERSION` in a `.env` next to
+   database, which you don't start here). Open `http://<printer pi>:8080` and
+   create an API key (Settings > API keys) with **Manage library**, **Add to
+   queue**, **Read status**, and permission to **add and remove printers**
+   (the agent adds the printers teachers request on the site's Printers page,
+   and removes one again if Bambuddy can't connect to it). Printers need LAN
+   Mode on and auto-updates off. There is no webhook to set up; the agent
+   reads print status from Bambuddy's queue. Pin `BAMBUDDY_VERSION` in a `.env` next to
    `docker-compose.yml` once you have a version that works.
 3. **Config**:
    ```bash
@@ -149,6 +153,9 @@ two Pis on the same version.
 | "Sending failed: … BAMBUDDY_PRINTER_ID" | Job has no printer and the agent has no fallback id |
 | "Sending failed: Adding to the Bambuddy queue failed …" | Wrong Bambuddy printer id on the Printer in `/admin/`, or printer offline in Bambuddy. Fix it, then **Retry** on `/review/` (the upload is reused) |
 | "Last release failed: … 409" on `/queue/` | Bambuddy thinks the loaded spool is too short. Check the filament, then release again |
+| Printer request stays "Waiting for the print agent" | Agent offline, or running an older version: `git pull` and restart it |
+| Printer request failed: "could not connect to the printer" | Printer off, LAN Mode off, or a wrong IP address, access code or serial number. Fix it and add the printer again |
+| Printer request failed: "returned 403" | The Bambuddy API key lacks permission to add printers |
 | Download keeps restarting | Checksum mismatch: the file changed on the site. It re-downloads on its own |
 
 ## API (for reference)
@@ -165,6 +172,9 @@ All under `/agent-api/v1/`, `Authorization: Bearer <key>`, JSON bodies.
 | `POST jobs/<id>/released/` | Staged print started |
 | `POST jobs/<id>/release-failed/` | `{error}`; shown on `/queue/`, staff can release again |
 | `POST jobs/<id>/event/` | `{event: started/completed/failed, detail?}` |
+| `POST printer-tickets/<id>/claim/` | The agent is about to add this printer (from `poll/`'s `printer_tickets` list: `id`, `name`, `ip_address`, `access_code`, `serial_number`). Repeatable by the same agent |
+| `POST printer-tickets/<id>/done/` | `{bambuddy_printer_id}`: added and connected; the site creates the printer. Repeats are no-ops |
+| `POST printer-tickets/<id>/failed/` | `{error}`; shown on `/printers/` |
 
 An agent only sees jobs for the printers ticked on it in `/admin/` (none =
 all printers), plus jobs with no printer if **Handles unassigned** is on.
