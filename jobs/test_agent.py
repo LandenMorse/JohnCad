@@ -7,6 +7,7 @@ import json
 import shutil
 import sys
 import tempfile
+import unittest
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -21,6 +22,11 @@ from django.utils import timezone
 from .bambuddy_client import BambuddyError
 from .models import Job, Printer, PrinterAgent
 from .tests import ReviewTestBase
+
+if sys.platform == 'win32':
+    # The agent locks its state dir with fcntl, which only exists on Unix
+    # (it runs on a Linux box next to Bambuddy).
+    raise unittest.SkipTest('the print agent is Unix-only (fcntl)')
 
 sys.path.insert(0, str(Path(settings.BASE_DIR) / 'agent'))
 import johncad_agent  # noqa: E402
