@@ -12,15 +12,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Throwaway values for CI only. Real deployments read these from .env.
-  SECRET_KEY: ci-only-not-a-real-secret-key-0123456789-abcdefghijklmnopqrstuvwxyz
-  POSTGRES_DB: johncad
-  POSTGRES_USER: johncad
-  POSTGRES_PASSWORD: johncad
-  POSTGRES_HOST: localhost
-  POSTGRES_PORT: "5432"
-
 jobs:
   lint:
     name: Lint (ruff)
@@ -42,6 +33,10 @@ jobs:
     name: Tests (Postgres)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Throwaway values for CI only. Real deployments read these from .env.
+      SECRET_KEY: ci-only-not-a-real-secret-key-0123456789-abcdefghijklmnopqrstuvwxyz
+      POSTGRES_PASSWORD: johncad
     services:
       postgres:
         # Keep in step with the db image in docker-compose.yml.
@@ -92,6 +87,7 @@ jobs:
         env:
           DEBUG: "False"
           HTTPS_ENABLED: "True"
+          SECRET_KEY: ci-only-not-a-real-secret-key-0123456789-abcdefghijklmnopqrstuvwxyz
           ALLOWED_HOSTS: example.org
         run: python manage.py check --deploy --fail-level WARNING
 
@@ -125,10 +121,6 @@ jobs:
     name: Install, backup and restore drill
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      # setup-pi.sh must generate its own .env, not inherit CI's values.
-      SECRET_KEY: ""
-      POSTGRES_PASSWORD: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
