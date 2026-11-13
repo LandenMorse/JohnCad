@@ -7,8 +7,8 @@ agent only ever makes outbound HTTPS requests, so the printers' network needs
 no inbound access.
 
 Every request carries the agent's key as "Authorization: Bearer jca_...".
-Served under /agent-api/v1/, which the Caddy/nginx configs leave public
-(unlike /api/, which holds the local-only Bambuddy webhook).
+Served under /agent-api/v1/, which the Caddyfile leaves public (unlike
+/api/, which holds the local-only Bambuddy webhook).
 """
 import hashlib
 import json

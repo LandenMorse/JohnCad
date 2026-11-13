@@ -1,17 +1,18 @@
-# Print agent: site at home, printers at school
+# Print agent: the printer Pi
 
-Use this when JohnCad is hosted somewhere other than the printers' network
-(e.g. a Pi at home) and that network allows only outbound connections. A small
-agent on a Pi at school checks in with the site over normal HTTPS (port 443),
-downloads approved, sliced jobs, and hands them to Bambuddy on the same Pi.
-Nothing at school accepts inbound connections, and there's no tunnel.
+This is how JohnCad reaches the printers. The site runs on one Pi (the
+**site Pi**, a Pi 5 at home); a second Pi on the printers' network (the
+**printer Pi**, a Pi 3 at school) runs Bambuddy and this agent. The agent
+checks in with the site over normal HTTPS (port 443), downloads approved,
+sliced jobs, and hands them to Bambuddy on the same Pi. Nothing at school
+accepts inbound connections, and there is no tunnel or VPN.
 
 ```
-students/teachers ──HTTPS──> home Pi 5: Caddy -> gunicorn (JohnCad) + slice_worker (OrcaSlicer)
+students/teachers ──HTTPS──> site Pi: Caddy -> gunicorn (JohnCad) + slice_worker (OrcaSlicer)
                                    ^
                                    │ HTTPS 443, outbound only, every 15 s
                                    │
-school Pi: johncad-agent ──> Bambuddy (127.0.0.1:8080) ──> printers (LAN)
+printer Pi: johncad-agent ──> Bambuddy (127.0.0.1:8080) ──> printers (LAN)
 ```
 
 What the agent does each round:
@@ -27,29 +28,25 @@ What the agent does each round:
 5. Reads each in-flight job's Bambuddy queue item and reports `started`,
    `completed` or `failed`, which moves the job along on the site.
 
-Slicing stays on the site's Pi (`slice_worker` + OrcaSlicer). The school Pi
+Slicing stays on the site Pi (`slice_worker` + OrcaSlicer). The printer Pi
 only moves finished files.
 
-## On the site (home Pi 5)
+## On the site Pi
 
-1. Pull this branch, then:
-   ```bash
-   .venv/bin/pip install -r requirements.txt
-   .venv/bin/python manage.py migrate
-   .venv/bin/python manage.py collectstatic --noinput
-   ```
-2. Add to `.env`:
+1. Install or update the site (`scripts/setup-site.sh` the first time,
+   `scripts/update.sh` afterwards; see the main README).
+2. `.env` must contain:
    ```
    BAMBUDDY_VIA_AGENT=True
    ```
-   `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`, `BAMBUDDY_PRINTER_ID` and
-   `BAMBUDDY_WEBHOOK_SECRET` aren't used here any more. They go in the
-   agent's config instead (keep `BAMBUDDY_STAGED`, which the agent follows).
-3. Bambuddy no longer runs on this Pi, so turn off the dispatcher and keep the
-   slicer:
+   (`setup-site.sh` writes it.) `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`,
+   `BAMBUDDY_PRINTER_ID` and `BAMBUDDY_WEBHOOK_SECRET` aren't used on the site
+   in this setup. They go in the agent's config instead (keep
+   `BAMBUDDY_STAGED`, which the agent follows).
+3. Only `johncad` and `johncad-slicer` run here. If this Pi still has the
+   old `johncad-dispatcher` service from an earlier setup, turn it off:
    ```bash
    sudo systemctl disable --now johncad-dispatcher
-   sudo systemctl restart johncad johncad-slicer
    ```
 4. Create the agent's key, either in `/admin/` > **Printer agents** > Add (the
    key is shown once at the top of the page after saving), or:
@@ -60,19 +57,29 @@ only moves finished files.
    leaked key: the admin action **Generate a new key**, or
    `create_agent_key school-pi --rotate`. Unticking **Is active** blocks the
    agent immediately.
-5. Printers stay in `/admin/` > **Printers** as before. Their **Bambuddy
-   printer id** is the id in the *school* Pi's Bambuddy.
+5. Add each printer under `/admin/` > **Printers**: a name teachers will
+   see, its **Bambuddy printer id** (the id in the *printer* Pi's Bambuddy,
+   shown at `http://<printer pi>:8080/docs` under `GET /api/v1/printers/`),
+   and the OrcaSlicer machine + process preset `.json` paths (`;`-separated)
+   for that printer's model, plus filament presets if needed. Teachers then
+   choose the printer when approving a job on `/review/`; it decides the
+   slicer presets and where the job is sent. Until you add a printer, jobs
+   use `ORCA_SLICER_SETTINGS` from `.env` and the agent's
+   `BAMBUDDY_PRINTER_ID` (single-printer setup).
 
 Caddy needs no change. The agent API is under `/agent-api/`, not `/api/`, so
 `respond /api/* 404` doesn't block it. It returns 404 unless
 `BAMBUDDY_VIA_AGENT=True`, and 401 without a valid key.
 
-## On the school Pi
+## On the printer Pi
+
+Any Pi on the printers' network that can run Docker works (the school's is a
+Pi 3).
 
 **First check that the school network lets the Pi reach the site.** Run this
-on the school WiFi:
+on the school network:
 ```bash
-curl -sI https://riponhighschoolprint.com/login/ | head -1
+curl -sI https://<your-domain>/login/ | head -1
 ```
 You want `HTTP/2 200` or `HTTP/1.1 200`. If it hangs or fails, the domain needs
 to be allowed for the Pi first (ask IT; the agent can't work around it).
@@ -80,16 +87,18 @@ to be allowed for the Pi first (ask IT; the agent can't work around it).
 1. **Get the code** (the agent imports `jobs/bambuddy_client.py` from it; no
    Django or Postgres needed here):
    ```bash
-   git clone https://github.com/LandenMorse/johncad.git ~/JohnCad
-   cd ~/JohnCad && git checkout agent-api
+   git clone https://github.com/LandenMorse/JohnCad.git ~/JohnCad
    sudo apt install -y python3-requests
    ```
 2. **Bambuddy** (needs Docker): `docker compose up -d bambuddy` from the
-   checkout starts only Bambuddy. Then follow the main README's "Bambuddy
-   setup" steps 1–2: add the printers, hand-print one file, and create an API
-   key with **Manage library**, **Add to queue** and **Read status**. Skip
-   the webhook step; the agent reads print status from Bambuddy's queue
-   instead.
+   checkout starts only Bambuddy (`docker-compose.yml` also has the site's
+   database, which you don't start here). Open `http://<printer pi>:8080`, add
+   the printers (LAN Mode on, printer auto-updates off), **hand-upload and
+   print one `.gcode.3mf`** to check the printer accepts it, and create an API
+   key (Settings > API keys) with **Manage library**, **Add to queue** and
+   **Read status**. There is no webhook to set up; the agent reads print
+   status from Bambuddy's queue. Pin `BAMBUDDY_VERSION` in a `.env` next to
+   `docker-compose.yml` once you have a version that works.
 3. **Config**:
    ```bash
    sudo cp agent/johncad-agent.env.example /etc/johncad-agent.env
@@ -101,8 +110,9 @@ to be allowed for the Pi first (ask IT; the agent can't work around it).
    set -a; . /etc/johncad-agent.env; set +a
    python3 agent/johncad_agent.py --check
    ```
-   It should print `Connected to https://riponhighschoolprint.com as agent "school-pi".`
-5. **Run it as a service** (replace `<user>` in the file first):
+   It should print `Connected to https://<your-domain> as agent "school-pi".`
+5. **Run it as a service** (replace `<user>` in the file first; the path in
+   it is where you cloned the repo):
    ```bash
    sudo cp agent/johncad-agent.service /etc/systemd/system/
    sudo nano /etc/systemd/system/johncad-agent.service
@@ -118,17 +128,23 @@ second one refuses to start.
 
 ## Updating
 
-`git pull` on both Pis. On the site, also run `migrate` + `collectstatic` and
-restart `johncad johncad-slicer`. On the school Pi, `sudo systemctl restart
-johncad-agent`.
+Update the site Pi first with `scripts/update.sh`. Then on the printer Pi:
+
+```bash
+cd ~/JohnCad && git pull
+sudo systemctl restart johncad-agent
+```
+
+The agent imports `jobs/bambuddy_client.py` from this checkout, so keep the
+two Pis on the same version.
 
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
 | `--check`: `returned 401` | Wrong key, or the agent is inactive in `/admin/` |
-| `--check`: `returned 404` | `BAMBUDDY_VIA_AGENT=True` missing on the site, or gunicorn not restarted |
-| `--check`: `Could not reach` / timeout | School network blocks the domain for the Pi, or the site is down |
+| `--check`: `returned 404` | `BAMBUDDY_VIA_AGENT=True` missing from the site Pi's `.env`, or gunicorn not restarted |
+| `--check`: `Could not reach` / timeout | School network blocks the domain for the Pi, or the site Pi is down |
 | Job stuck at "Sending to printer…" | Agent offline (see `/queue/`), or still downloading: `journalctl -u johncad-agent` |
 | "Sending failed: … BAMBUDDY_PRINTER_ID" | Job has no printer and the agent has no fallback id |
 | "Sending failed: Adding to the Bambuddy queue failed …" | Wrong Bambuddy printer id on the Printer in `/admin/`, or printer offline in Bambuddy. Fix it, then **Retry** on `/review/` (the upload is reused) |

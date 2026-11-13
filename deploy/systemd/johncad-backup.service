@@ -1,4 +1,4 @@
-# Installed by scripts/setup-pi.sh, which replaces @USER@ and @DIR@.
+# Installed by scripts/setup-site.sh, which replaces @USER@ and @DIR@.
 [Unit]
 Description=JohnCad backup (database + uploads)
 After=docker.service

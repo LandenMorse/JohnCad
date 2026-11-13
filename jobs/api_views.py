@@ -13,8 +13,8 @@ from .dispatch import APPLIED, CONFLICT, apply_event, find_job_for_webhook
 def bambuddy_webhook(request):
     """Print status from Bambuddy's outgoing webhook.
 
-    Meant to be reached only from Bambuddy on the same host: the public nginx
-    config doesn't proxy /api/. Authenticated by BAMBUDDY_WEBHOOK_SECRET.
+    Direct mode only (BAMBUDDY_VIA_AGENT=False), reached only from Bambuddy on
+    the same host: the Caddyfile returns 404 for /api/. Authenticated by BAMBUDDY_WEBHOOK_SECRET.
     """
     if not bambuddy.webhook_secret_ok(request):
         return JsonResponse({'error': 'Bad or missing webhook secret.'}, status=403)

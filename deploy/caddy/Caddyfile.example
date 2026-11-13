@@ -1,0 +1,28 @@
+# /etc/caddy/Caddyfile on the Raspberry Pi that runs the JohnCad site.
+#
+#   sudo apt install -y caddy
+#   sudo cp deploy/caddy/Caddyfile.example /etc/caddy/Caddyfile
+#   sudo nano /etc/caddy/Caddyfile        # put your domain on the first line
+#   sudo systemctl reload caddy
+#
+# Caddy gets and renews the Let's Encrypt certificate by itself, redirects
+# http:// to https://, and sets X-Forwarded-Proto: https, which Django trusts
+# (SECURE_PROXY_SSL_HEADER in cms/settings.py). The domain's DNS record must
+# point at this Pi's public IP, and the router must forward TCP 80 and 443
+# to the Pi.
+
+print.example.org {
+	# /api/ only holds Bambuddy's webhook, which is for the direct (no print
+	# agent) setup and is local-only. Keep it off the internet. The print agent
+	# uses /agent-api/, which stays public.
+	respond /api/* 404
+
+	request_body {
+		max_size 512MB          # keep in sync with DATA_UPLOAD_MAX_MEMORY_SIZE in cms/settings.py
+	}
+	reverse_proxy 127.0.0.1:8000 {
+		transport http {
+			response_header_timeout 900s   # matches gunicorn --timeout 900
+		}
+	}
+}

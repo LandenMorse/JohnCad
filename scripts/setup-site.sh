@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# One-command JohnCad install for a Raspberry Pi (Raspberry Pi OS 64-bit or
-# another Debian/Ubuntu system).
+# One-command install of the JohnCad SITE on a Raspberry Pi (Raspberry Pi OS
+# 64-bit or another Debian/Ubuntu system). This is the Pi that runs the
+# website, the database and the slicer. The printers' side (Bambuddy + print
+# agent, usually a second Pi at school) is set up separately: agent/README.md.
 #
 #   git clone https://github.com/LandenMorse/JohnCad.git && cd JohnCad
-#   scripts/setup-pi.sh
+#   scripts/setup-site.sh
 #
 # What it does, in order:
 #   1. installs system packages (Docker, Python venv, Flatpak, OrcaSlicer)
 #   2. creates the Python environment in .venv/
-#   3. writes .env with freshly generated secrets (never overwrites one)
+#   3. writes .env with freshly generated secrets, set up for a print agent
+#      (never overwrites an existing one)
 #   4. starts Postgres and creates the database tables
-#   5. installs and starts the JohnCad services, plus a nightly backup
+#   5. installs and starts the site and slicer services, plus a nightly backup
 #   6. asks you to create the admin login
 #
 # It is safe to run again: every step checks what is already done.
@@ -19,8 +22,8 @@
 #   --no-orca   don't install the OrcaSlicer Flatpak (large download)
 #
 # After it finishes the site answers on this Pi at http://127.0.0.1:8000/.
-# Printers, slicer presets and a public address are separate steps; the
-# script prints what is left. Full guide: README.md and docs/operations.md.
+# A public address, the print agent and slicer presets are separate steps;
+# the script prints what is left. Full guide: README.md, docs/operations.md.
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -96,17 +99,17 @@ else
     ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     [ -n "$ip" ] && hosts="$hosts,$ip"
     umask 077
-    SECRET_KEY="$(secret 50)" POSTGRES_PASSWORD="$(secret 24)" \
-    BAMBUDDY_WEBHOOK_SECRET="$(secret 24)" ALLOWED_HOSTS="$hosts" \
+    SECRET_KEY="$(secret 50)" POSTGRES_PASSWORD="$(secret 24)" ALLOWED_HOSTS="$hosts" \
     .venv/bin/python - <<'PY'
 import os
 import re
 
 text = open('.env.example', encoding='utf-8').read()
 values = {name: os.environ[name] for name in (
-    'SECRET_KEY', 'POSTGRES_PASSWORD', 'BAMBUDDY_WEBHOOK_SECRET', 'ALLOWED_HOSTS',
+    'SECRET_KEY', 'POSTGRES_PASSWORD', 'ALLOWED_HOSTS',
 )}
 values['DEBUG'] = 'False'
+values['BAMBUDDY_VIA_AGENT'] = 'True'
 for name, value in values.items():
     text, count = re.subn(rf'(?m)^{name}=.*$', lambda m: f'{name}={value}', text, count=1)
     if not count:
@@ -131,7 +134,7 @@ fi
 
 # ---------------------------------------------------------------- 5. services
 say "5/6 Installing services"
-for unit in johncad.service johncad-slicer.service johncad-dispatcher.service \
+for unit in johncad.service johncad-slicer.service \
             johncad-backup.service johncad-backup.timer; do
     sed -e "s|@USER@|$user|g" -e "s|@DIR@|$ROOT|g" "deploy/systemd/$unit" \
         | sudo tee "/etc/systemd/system/$unit" >/dev/null
@@ -164,11 +167,12 @@ $(printf '\033[1m')JohnCad is installed.$(printf '\033[0m')
 On this Pi it answers at http://127.0.0.1:8000/ (admin at /admin/).
 
 Still to do, each described in README.md:
-  1. Put it on the network: "nginx + HTTPS" (own domain), or deploy/frp/
-     if the school network blocks incoming connections.
-  2. Printers: "Bambuddy setup" - then add each printer in /admin/.
-  3. Slicer presets: "OrcaSlicer" - the preset .json paths go on each
+  1. A web address: point a domain at this Pi and put Caddy in front
+     ("A web address" in the README, deploy/caddy/Caddyfile.example).
+  2. Slicer presets: "Slicer presets" - the preset .json paths go on each
      printer in /admin/ (or ORCA_SLICER_SETTINGS in .env).
+  3. The printers' side: set up the print agent and Bambuddy on the Pi at
+     the printers (agent/README.md), then add each printer in /admin/.
   4. Backups go to $ROOT/backups. Set BACKUP_DIR in .env to a USB drive
      so they survive the SD card failing: docs/operations.md.
 

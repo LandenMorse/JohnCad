@@ -4,7 +4,8 @@ Thanks for helping. JohnCad is run by teachers on a Raspberry Pi in a
 classroom, so the bar for every change is: **a teacher who is not a
 programmer can install it, update it and recover from a mistake.**
 
-- What the app does and how it is laid out: [README](README.md)
+- What the app does and how it is laid out: [README](README.md); how it is
+  deployed (two Raspberry Pis) is at the top of it
 - Current implementation notes and open items: [CLAUDE.md](CLAUDE.md)
 - How an install is run day to day: [docs/operations.md](docs/operations.md)
 
@@ -29,8 +30,8 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Open <http://127.0.0.1:8000/>. Slicing and printing need OrcaSlicer and
-Bambuddy, which you don't need for most work: the tests fake both.
+Open <http://127.0.0.1:8000/>. Slicing and printing need OrcaSlicer, Bambuddy and a print agent, which you
+don't need for most work: the tests fake all three.
 
 To develop against Postgres, like production and CI, leave `DATABASE_ENGINE`
 blank and start the database with `docker compose up -d db`.
@@ -43,7 +44,7 @@ Run what CI runs:
 ruff check .                                  # lint
 python manage.py test                         # tests
 python manage.py makemigrations --check       # model changes have a migration
-shellcheck -x scripts/*.sh entrypoint.sh      # only if you touched a script
+shellcheck -x scripts/*.sh                     # only if you touched a script
 ```
 
 Tests need no setup: they use their own database, plain static files and a
@@ -61,8 +62,7 @@ Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 | Tests (Postgres) | Migrations apply from scratch and the suite passes on Postgres 16, with deprecation warnings as errors |
 | Production settings check | `manage.py check --deploy` is clean with `DEBUG=False` |
 | Dependency vulnerabilities | `pip-audit` finds nothing in `requirements.txt` |
-| Docker image builds | The `Dockerfile` still builds |
-| Install, backup and restore drill | `scripts/setup-pi.sh` installs on a clean machine (twice), the site answers, and a backup restores |
+| Install, backup and restore drill | `scripts/setup-site.sh` installs on a clean machine (twice), the site answers, a print agent can connect to it, and a backup restores |
 
 If a check fails, fix the cause. Don't skip or silence it; if an exception
 really is right, add it with a comment that says why (see
@@ -119,8 +119,9 @@ Teachers run these with real data, so:
   the old data aside rather than deleting it.
 
 The CI install drill runs them on Ubuntu x86. It can't cover a real
-Raspberry Pi, the OrcaSlicer Flatpak or HTTPS setup: if you change those
-paths, say in the pull request how you tested them.
+Raspberry Pi, the OrcaSlicer Flatpak, Caddy/HTTPS, or the printer Pi (print
+agent and Bambuddy): if you change those paths, say in the pull request how you
+tested them.
 
 ## Dependencies
 
