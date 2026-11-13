@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,17 +22,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
+# DEBUG is off unless .env says DEBUG=True, so a missing or mistyped .env can
+# never put a real site into debug mode.
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get(
-    'SECRET_KEY',
-    'django-insecure-$9ij#fi!gao*298-#^$4o2tn)q8z3asln#5)q1qvjzajp1-bb_',
-)
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+# SECRET_KEY must come from the environment (.env). The placeholder below is
+# only accepted in DEBUG mode, for local development; a real deployment
+# refuses to start without its own key.
+_DEV_SECRET_KEY = 'django-insecure-dev-only-key-never-used-when-debug-is-off'
+SECRET_KEY = os.environ.get('SECRET_KEY', '')
+if SECRET_KEY in ('', 'change-me'):
+    if not DEBUG:
+        raise ImproperlyConfigured(
+            'SECRET_KEY is not set. Copy .env.example to .env and set SECRET_KEY '
+            '(python -c "import secrets; print(secrets.token_urlsafe(50))"), '
+            'or set DEBUG=True in .env for local development.'
+        )
+    SECRET_KEY = _DEV_SECRET_KEY
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
