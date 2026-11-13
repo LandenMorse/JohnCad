@@ -1,0 +1,10 @@
+# Installed by scripts/setup-pi.sh, which replaces @USER@ and @DIR@.
+[Unit]
+Description=JohnCad backup (database + uploads)
+After=docker.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/scripts/backup.sh
