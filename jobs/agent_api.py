@@ -22,9 +22,9 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from . import dispatch
+from . import dispatch, printer_tickets
 from .bambuddy_client import upload_name
-from .models import Job, PrinterAgent
+from .models import AddPrinterTicket, Job, PrinterAgent
 
 API_VERSION = 1
 STREAM_BLOCK = 64 * 1024
@@ -94,6 +94,7 @@ def poll(request):
     """Everything the agent should do now."""
     agent = request.agent
     dispatch.reset_stale_agent_claims()
+    printer_tickets.reset_stale_claims()
     return JsonResponse({
         'api_version': API_VERSION,
         'agent': agent.name,
@@ -115,6 +116,18 @@ def poll(request):
         'track': [
             {'id': job.id, 'status': job.status, 'bambuddy_queue_id': job.bambuddy_queue_id}
             for job in dispatch.agent_track_jobs(agent)
+        ],
+        # Printers teachers asked to add (/printers/). The access code is only
+        # ever sent here, to an authenticated agent, while the ticket is open.
+        'printer_tickets': [
+            {
+                'id': ticket.id,
+                'name': ticket.name,
+                'ip_address': ticket.ip_address,
+                'access_code': ticket.access_code,
+                'serial_number': ticket.serial_number,
+            }
+            for ticket in printer_tickets.tickets_for_agent(agent)
         ],
     })
 
@@ -286,3 +299,46 @@ def event(request, pk):
     if result == dispatch.CONFLICT:
         return _error(f'Job is "{job.status}", can\'t apply "{name}".', 409)
     return JsonResponse({'status': 'ok' if result == dispatch.APPLIED else 'unchanged'})
+
+
+@require_POST
+@agent_required
+def printer_ticket_claim(request, pk):
+    """The agent is about to add this printer to Bambuddy."""
+    ticket = get_object_or_404(AddPrinterTicket, pk=pk)
+    if not printer_tickets.claim(request.agent, ticket):
+        return _error('This printer request is not waiting to be carried out.', 409)
+    return JsonResponse({'status': 'ok'})
+
+
+@require_POST
+@agent_required
+def printer_ticket_done(request, pk):
+    """{"bambuddy_printer_id"}: the printer is in Bambuddy and connected."""
+    ticket = get_object_or_404(AddPrinterTicket, pk=pk)
+    data = _body(request)
+    if data is None:
+        return _error('Body must be a JSON object.', 400)
+    try:
+        printer_id = int(data.get('bambuddy_printer_id'))
+    except (TypeError, ValueError):
+        printer_id = 0
+    if printer_id <= 0:
+        return _error('bambuddy_printer_id must be a positive number.', 400)
+    result = printer_tickets.complete(ticket, request.agent, printer_id)
+    if result == printer_tickets.CONFLICT:
+        return _error('This printer request was cancelled or has already failed.', 409)
+    return JsonResponse({'status': 'ok' if result == printer_tickets.APPLIED else 'unchanged'})
+
+
+@require_POST
+@agent_required
+def printer_ticket_failed(request, pk):
+    """{"error"}: the agent couldn't add the printer."""
+    ticket = get_object_or_404(AddPrinterTicket, pk=pk)
+    data = _body(request)
+    if data is None:
+        return _error('Body must be a JSON object.', 400)
+    if not printer_tickets.fail(ticket, request.agent, _text(data.get('error'))):
+        return _error('This printer request is no longer open.', 409)
+    return JsonResponse({'status': 'ok'})

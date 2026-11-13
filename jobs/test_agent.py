@@ -20,7 +20,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .bambuddy_client import BambuddyError
-from .models import Job, Printer, PrinterAgent
+from .models import AddPrinterTicket, Job, Printer, PrinterAgent, PrinterModel
 from .tests import ReviewTestBase
 
 if sys.platform == 'win32':
@@ -408,6 +408,10 @@ class FakeBambuddy:
         self.queue = {}
         self.started = []
         self.fail = {}
+        self.printers = {}          # id -> {"serial_number", "connected", ...}
+        self.deleted = []
+        self.connect_new_printers = True
+        self.status_checks = 0
 
     def _maybe_fail(self, what):
         if what in self.fail:
@@ -433,6 +437,27 @@ class FakeBambuddy:
     def queue_item_status(self, queue_id):
         item = self.queue.get(queue_id)
         return item['status'] if item else johncad_agent.MISSING
+
+    def add_printer(self, name, ip_address, access_code, serial_number):
+        self._maybe_fail('add_printer')
+        self.printers[30 + len(self.printers)] = {
+            'name': name, 'ip_address': ip_address, 'access_code': access_code,
+            'serial_number': serial_number, 'connected': self.connect_new_printers,
+        }
+
+    def find_printer_id(self, serial_number):
+        self._maybe_fail('list_printers')
+        return next((pid for pid, printer in self.printers.items()
+                     if printer['serial_number'] == serial_number), None)
+
+    def printer_connected(self, printer_id):
+        self.status_checks += 1
+        return self.printers[printer_id]['connected']
+
+    def delete_printer(self, printer_id):
+        self._maybe_fail('delete_printer')
+        del self.printers[printer_id]
+        self.deleted.append(printer_id)
 
 
 class AgentProgramTests(AgentTestBase):
@@ -636,3 +661,134 @@ class AgentProgramTests(AgentTestBase):
         self.assertIn('JOHNCAD_AGENT_KEY is not set', problems)
         self.assertIn('BAMBUDDY_API_KEY is not set', problems)
         self.assertIn('https://', problems)
+
+    # -- adding printers ---------------------------------------------------
+
+    def printer_ticket(self, **kwargs):
+        model = PrinterModel.objects.get_or_create(
+            name='X1 Carbon 0.4', defaults={'settings_path': 'm.json;p.json'},
+        )[0]
+        fields = {
+            'name': 'Lab X1C', 'ip_address': '192.168.1.50', 'access_code': 'CODE1234',
+            'serial_number': '01P00A000000002', 'printer_model': model,
+            'requested_by': self.teacher, **kwargs,
+        }
+        return AddPrinterTicket.objects.create(**fields)
+
+    def test_add_printer_ticket_full_cycle(self):
+        ticket = self.printer_ticket()
+        self.prog.run_once()
+        self.assertEqual(self.bambuddy.printers[30], {
+            'name': 'Lab X1C', 'ip_address': '192.168.1.50', 'access_code': 'CODE1234',
+            'serial_number': '01P00A000000002', 'connected': True,
+        })
+        ticket.refresh_from_db()
+        self.assertEqual(
+            (ticket.status, ticket.bambuddy_printer_id, ticket.access_code, ticket.agent),
+            (AddPrinterTicket.Status.SUCCEEDED, 30, '', self.agent),
+        )
+        printer = Printer.objects.get(name='Lab X1C')
+        self.assertEqual(
+            (printer.bambuddy_printer_id, printer.serial_number, ticket.printer),
+            (30, '01P00A000000002', printer),
+        )
+        self.assertEqual(self.prog.state.outbox, [])
+        # Nothing more to do next round, and no second printer in Bambuddy.
+        self.prog.run_once()
+        self.assertEqual(len(self.bambuddy.printers), 1)
+
+    def test_new_printer_then_prints_a_job(self):
+        self.printer_ticket()
+        self.prog.run_once()
+        printer = Printer.objects.get(name='Lab X1C')
+        self.sliced(printer=printer)
+        self.prog.run_once()
+        self.assertEqual(self.bambuddy.queue['500']['printer'], 30)
+
+    def test_printer_that_never_connects_fails_and_is_removed(self):
+        self.bambuddy.connect_new_printers = False
+        ticket = self.printer_ticket()
+        self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, AddPrinterTicket.Status.FAILED)
+        self.assertIn('could not connect to the printer within 60 seconds', ticket.error)
+        self.assertEqual((self.bambuddy.printers, self.bambuddy.deleted), ({}, [30]))
+        self.assertEqual(self.bambuddy.status_checks, 20)      # 60 s / every 3 s
+        self.assertFalse(Printer.objects.filter(name='Lab X1C').exists())
+
+    def test_printer_that_connects_late_succeeds(self):
+        ticket = self.printer_ticket()
+        self.bambuddy.connect_new_printers = False
+        original = self.bambuddy.printer_connected
+
+        def connected(printer_id):
+            if self.bambuddy.status_checks == 3:
+                self.bambuddy.printers[printer_id]['connected'] = True
+            return original(printer_id)
+
+        self.bambuddy.printer_connected = connected
+        self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, AddPrinterTicket.Status.SUCCEEDED)
+        self.assertEqual(self.bambuddy.status_checks, 4)
+
+    def test_bambuddy_refusing_the_printer_is_reported_without_the_access_code(self):
+        self.bambuddy.fail['add_printer'] = 'Bambuddy POST /printers/ returned 400: bad code CODE1234'
+        ticket = self.printer_ticket()
+        self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, AddPrinterTicket.Status.FAILED)
+        self.assertIn('returned 400', ticket.error)
+        self.assertNotIn('CODE1234', ticket.error)
+        self.assertEqual(self.bambuddy.printers, {})
+
+    def test_printer_already_in_bambuddy_is_adopted_not_added_twice(self):
+        # e.g. an earlier attempt added it and was cut off before reporting.
+        self.bambuddy.printers[41] = {'serial_number': '01P00A000000002', 'connected': True}
+        ticket = self.printer_ticket()
+        self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(
+            (ticket.status, ticket.bambuddy_printer_id), (AddPrinterTicket.Status.SUCCEEDED, 41))
+        self.assertEqual(list(self.bambuddy.printers), [41])
+
+    def test_existing_bambuddy_printer_is_not_deleted_when_it_is_offline(self):
+        self.bambuddy.printers[41] = {'serial_number': '01P00A000000002', 'connected': False}
+        ticket = self.printer_ticket()
+        self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, AddPrinterTicket.Status.FAILED)
+        self.assertEqual((list(self.bambuddy.printers), self.bambuddy.deleted), ([41], []))
+
+    def test_printer_report_survives_site_outage_and_restart(self):
+        ticket = self.printer_ticket()
+        original = self.session.request
+
+        def flaky(method, url, **kwargs):
+            if url.endswith('/done/'):
+                raise johncad_agent.requests.ConnectionError('site down')
+            return original(method, url, **kwargs)
+
+        self.session.request = flaky
+        with self.assertRaises(johncad_agent.HomeError):
+            self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, AddPrinterTicket.Status.ADDING)
+
+        self.session.request = original
+        self.prog = self.make_agent()        # restart: the report is on disk
+        self.prog.run_once()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, AddPrinterTicket.Status.SUCCEEDED)
+        self.assertEqual(len(self.bambuddy.printers), 1)
+
+    def test_cancelled_ticket_is_skipped(self):
+        ticket = self.printer_ticket()
+        work = {'printer_tickets': [{
+            'id': ticket.id, 'name': ticket.name, 'ip_address': ticket.ip_address,
+            'access_code': ticket.access_code, 'serial_number': ticket.serial_number,
+        }]}
+        from . import printer_tickets
+        printer_tickets.cancel(ticket)
+        self.prog.add_printer(work['printer_tickets'][0])
+        self.assertEqual(self.bambuddy.printers, {})

@@ -45,6 +45,17 @@ QUEUE_STATUS_EVENTS = {
 # What queue_item_status() returns when Bambuddy no longer has the item.
 MISSING = 'missing'
 
+# Printers (https://wiki.bambuddy.cool/reference/api/, "Printers", read
+# 2026-11-13; not yet run against a live Bambuddy). POST /printers takes
+# {"name", "ip_address", "access_code", "serial_number"}. GET /printers lists
+# [{"id", "name", "ip_address", "serial_number", "model", ...}].
+# GET /printers/{id}/status has "connected": true once Bambuddy has reached the
+# printer. DELETE /printers/{id}?delete_archives=false removes one. The API
+# key needs permission to add printers and read their status.
+PRINTERS_PATH = '/printers/'
+PRINTER_PATH = '/printers/{printer_id}'
+PRINTER_STATUS_PATH = '/printers/{printer_id}/status'
+
 UPLOAD_NAME = 'johncad-job-{job_id}.gcode.3mf'
 JOB_NAME_RE = re.compile(r'\bjohncad-job-(\d+)\b')
 
@@ -148,3 +159,41 @@ class BambuddyClient:
         if status == MISSING:
             return MISSING
         return QUEUE_STATUS_EVENTS.get(status)
+
+    def add_printer(self, name, ip_address, access_code, serial_number):
+        """Register a printer with Bambuddy. Use find_printer_id() afterwards
+        for its id, and printer_connected() to see whether Bambuddy reached it."""
+        self._request('POST', PRINTERS_PATH, json={
+            'name': name,
+            'ip_address': ip_address,
+            'access_code': access_code,
+            'serial_number': serial_number,
+        })
+
+    def find_printer_id(self, serial_number):
+        """Bambuddy's id (an int) for the printer with this serial number, or
+        None if it has no such printer."""
+        printers = self._request('GET', PRINTERS_PATH)
+        if not isinstance(printers, list):
+            raise BambuddyError(f'Bambuddy printer list is not a list: {printers!r}'[:500])
+        wanted = str(serial_number).strip().upper()
+        for printer in printers:
+            if not isinstance(printer, dict):
+                continue
+            if str(printer.get('serial_number', '')).strip().upper() == wanted:
+                printer_id = as_int(printer.get('id'))
+                if isinstance(printer_id, int):
+                    return printer_id
+        return None
+
+    def printer_connected(self, printer_id):
+        """True once Bambuddy has a live connection to the printer."""
+        data = self._request('GET', PRINTER_STATUS_PATH.format(printer_id=printer_id))
+        return isinstance(data, dict) and data.get('connected') is True
+
+    def delete_printer(self, printer_id):
+        """Remove a printer from Bambuddy (its print archives are kept)."""
+        self._request(
+            'DELETE', PRINTER_PATH.format(printer_id=printer_id),
+            params={'delete_archives': 'false'},
+        )

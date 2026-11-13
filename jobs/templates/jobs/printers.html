@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Printers{% endblock %}
+{% block page_class %} wide{% endblock %}
+{% block head %}{% if auto_refresh %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
+{% block content %}
+<h1>Printers</h1>
+<p class="subtitle">Add a printer, see how earlier requests went, and set which filament is loaded.</p>
+
+{% if not via_agent %}
+<div class="card">
+    <p class="error-detail">Adding printers from this page needs a print agent (BAMBUDDY_VIA_AGENT), which is switched off on this site. Requests made here will wait.</p>
+</div>
+{% elif not agents %}
+<div class="card">
+    <p class="error-detail">No print agent is set up yet, so requests made here will wait. An admin can add one in /admin/.</p>
+</div>
+{% endif %}
+
+<h2>Add a printer</h2>
+<div class="card">
+    <p class="subtitle">Switch the printer on, connect it to the school network and turn on LAN Mode. The IP address, access code and serial number are on its screen.</p>
+    <form method="post" action="{% url 'printers' %}">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Add printer</button>
+    </form>
+</div>
+
+<h2>Requests</h2>
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Printer</th><th>Model</th><th>IP address</th><th>Serial number</th><th>Requested</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for ticket in tickets %}
+            <tr>
+                <td>{{ ticket.name }}</td>
+                <td>{{ ticket.printer_model.name }}</td>
+                <td>{{ ticket.ip_address }}</td>
+                <td>{{ ticket.serial_number }}</td>
+                <td>{{ ticket.created_at|date:"M j, H:i" }}{% if ticket.requested_by %} by {{ ticket.requested_by.username }}{% endif %}</td>
+                <td>
+                    <span class="status-badge">{{ ticket.get_status_display }}</span>
+                    {% if ticket.status == 'failed' %}<div class="error-detail">{{ ticket.error }}</div>{% endif %}
+                </td>
+                <td>
+                    {% if ticket.status == 'pending' %}
+                    <form method="post" action="{% url 'printer-ticket-cancel' ticket.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-danger">Cancel</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="7">No printers have been requested yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% if auto_refresh %}<p class="subtitle">This page refreshes by itself while a request is in progress.</p>{% endif %}
+</div>
+
+<h2>Printers</h2>
+<div class="card">
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Printer</th><th>Model</th><th>Filament in each slot</th></tr>
+        </thead>
+        <tbody>
+            {% for printer in printers %}
+            <tr>
+                <td>{{ printer.name }}{% if not printer.is_active %} <span class="status-badge">Not in use</span>{% endif %}</td>
+                <td>{{ printer.printer_model.name|default:"—" }}</td>
+                <td>
+                    <form method="post" action="{% url 'printer-filaments' printer.pk %}" class="filament-form">
+                        {% csrf_token %}
+                        {% for field in printer.filaments_form %}
+                        <label>{{ field.label }} {{ field }}</label>
+                        {% endfor %}
+                        <button type="submit">Save</button>
+                    </form>
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="3">No printers yet. Add one above.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+{% endblock %}

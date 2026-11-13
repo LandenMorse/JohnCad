@@ -2,6 +2,11 @@ import hashlib
 import secrets
 
 from django.conf import settings
+from django.core.validators import (
+    MaxValueValidator,
+    MinValueValidator,
+    RegexValidator,
+)
 from django.db import models
 from django.db.models import Q
 
@@ -14,30 +19,79 @@ def job_sliced_file_upload_path(instance, filename):
 job_gcode_upload_path = job_sliced_file_upload_path
 
 
+class PrinterModel(models.Model):
+    """A kind of printer (e.g. "Bambu Lab X1 Carbon, 0.4 nozzle") and the
+    OrcaSlicer presets that slice for it. Every Printer of that kind points
+    here, so the preset paths are entered once. Managed in /admin/."""
+    name = models.CharField(max_length=100, unique=True)
+    settings_path = models.CharField(
+        max_length=1000,
+        help_text=(
+            'Path on the site Pi of the OrcaSlicer machine preset .json, then the '
+            'process preset .json, separated by a semicolon (OrcaSlicer '
+            '--load-settings).'
+        ),
+    )
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class Filament(models.Model):
+    """A filament teachers can load, and the OrcaSlicer filament preset that
+    slices for it. Managed in /admin/."""
+    filament_type = models.CharField(
+        'type', max_length=50, help_text='The material, e.g. PLA, PETG, TPU.',
+    )
+    color = models.CharField(max_length=50, help_text='e.g. Black, Jade White.')
+    preset_path = models.CharField(
+        max_length=500,
+        help_text='Path on the site Pi of the OrcaSlicer filament preset .json.',
+    )
+
+    class Meta:
+        ordering = ['filament_type', 'color']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['filament_type', 'color'], name='unique_filament_type_color',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.filament_type} {self.color}'
+
+
 class Printer(models.Model):
     """A physical printer a teacher can send a job to.
 
-    Registered in Bambuddy first (IP, serial, access code live there); this row
-    only links JohnCad's name for it to Bambuddy's printer id and says which
-    OrcaSlicer presets slice for it, since a sliced file only prints on the
-    printer model it was sliced for.
+    Its IP address and access code live in Bambuddy, not here; this row links
+    JohnCad's name for the printer to Bambuddy's printer id, and says what the
+    slicer needs to know: which PrinterModel it is and which Filament is loaded
+    in each slot. Teachers add printers on /printers/ (an AddPrinterTicket,
+    carried out by the print agent).
     """
+    MAX_FILAMENT_SLOTS = 4
+
     name = models.CharField(max_length=100, unique=True)
     bambuddy_printer_id = models.PositiveIntegerField(
         help_text="Bambuddy's id for this printer (GET /api/v1/printers/ on Bambuddy).",
     )
-    slicer_settings = models.CharField(
-        max_length=1000,
+    serial_number = models.CharField(max_length=32, blank=True)
+    # Null only for printers from before PrinterModel existed; those slice with
+    # the ORCA_SLICER_* settings from .env.
+    printer_model = models.ForeignKey(
+        PrinterModel,
+        on_delete=models.PROTECT,
+        null=True,
         blank=True,
-        help_text=(
-            'Semicolon-separated machine + process preset .json paths for this '
-            'printer (OrcaSlicer --load-settings). Blank = use ORCA_SLICER_SETTINGS.'
-        ),
+        related_name='printers',
+        help_text='Decides the slicer presets. Blank = use ORCA_SLICER_SETTINGS.',
     )
-    slicer_filaments = models.CharField(
-        max_length=1000,
-        blank=True,
-        help_text='Semicolon-separated filament preset .json path(s). Optional.',
+    filaments = models.ManyToManyField(
+        Filament, through='PrinterFilament', related_name='printers', blank=True,
     )
     is_active = models.BooleanField(
         default=True,
@@ -49,6 +103,36 @@ class Printer(models.Model):
 
     def __str__(self):
         return self.name
+
+    def filament_preset_paths(self):
+        """The loaded filaments' preset paths in slot order, ';'-joined for
+        OrcaSlicer's --load-filaments ('' if no filament is set)."""
+        return ';'.join(
+            slot.filament.preset_path
+            for slot in self.filament_slots.select_related('filament')
+        )
+
+
+class PrinterFilament(models.Model):
+    """Which Filament is loaded in one slot (1-4) of a Printer. The slot order
+    is the order OrcaSlicer is given the filament presets in."""
+    printer = models.ForeignKey(Printer, on_delete=models.CASCADE, related_name='filament_slots')
+    filament = models.ForeignKey(Filament, on_delete=models.PROTECT, related_name='printer_slots')
+    slot = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(Printer.MAX_FILAMENT_SLOTS)],
+    )
+
+    class Meta:
+        ordering = ['printer', 'slot']
+        constraints = [
+            models.UniqueConstraint(fields=['printer', 'slot'], name='unique_printer_filament_slot'),
+            models.CheckConstraint(
+                condition=Q(slot__gte=1) & Q(slot__lte=4), name='printer_filament_slot_1_to_4',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.printer} slot {self.slot}: {self.filament}'
 
 
 class Job(models.Model):
@@ -238,3 +322,74 @@ class PrinterAgent(models.Model):
         if self.handles_unassigned:
             scope |= Q(printer__isnull=True)
         return Job.objects.filter(scope)
+
+
+class AddPrinterTicket(models.Model):
+    """A teacher's request to add a printer (made on /printers/).
+
+    The site can't reach the printers' network, so the print agent carries it
+    out: it adds the printer to Bambuddy, waits for Bambuddy to connect to it,
+    and reports Bambuddy's id for it. The site then creates the Printer and
+    links it here. Logic: jobs/printer_tickets.py.
+
+    The access code is only kept while the ticket is open; it is blanked as
+    soon as the ticket succeeds, fails or is cancelled.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Waiting for the print agent'
+        ADDING = 'adding', 'Adding to Bambuddy'
+        SUCCEEDED = 'succeeded', 'Added'
+        FAILED = 'failed', 'Failed'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    OPEN_STATUSES = (Status.PENDING, Status.ADDING)
+
+    name = models.CharField(
+        'printer name', max_length=100,
+        help_text='What teachers will see when choosing a printer.',
+    )
+    ip_address = models.GenericIPAddressField(
+        'IP address', protocol='IPv4',
+        help_text="The printer's address on the school network (printer screen: Settings > Network).",
+    )
+    access_code = models.CharField(
+        max_length=16, blank=True,
+        validators=[RegexValidator(r'^[A-Za-z0-9]{8}$', 'The access code is 8 letters and digits.')],
+        help_text="The 8-character LAN access code on the printer's screen.",
+    )
+    serial_number = models.CharField(
+        max_length=32,
+        validators=[RegexValidator(r'^[A-Z0-9]{10,32}$', 'The serial number is letters and digits only.')],
+        help_text="On the printer's screen (Settings > Device) or the label on its back.",
+    )
+    printer_model = models.ForeignKey(
+        PrinterModel, on_delete=models.PROTECT, related_name='tickets',
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    error = models.TextField(blank=True)
+    bambuddy_printer_id = models.PositiveIntegerField(null=True, blank=True)
+    # The printer this ticket created, once it succeeds.
+    printer = models.OneToOneField(
+        Printer, on_delete=models.SET_NULL, null=True, blank=True, related_name='ticket',
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='printer_tickets',
+    )
+    agent = models.ForeignKey(
+        'PrinterAgent', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='printer_tickets',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Add printer "{self.name}" ({self.get_status_display()})'
+
+    @property
+    def is_open(self):
+        return self.status in self.OPEN_STATUSES

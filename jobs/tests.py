@@ -822,25 +822,6 @@ class PrinterSlicingTests(ReviewTestBase):
         return commands[0]
 
     @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
-    def test_printer_presets_replace_env_presets(self):
-        printer = Printer.objects.create(
-            name='X1C', bambuddy_printer_id=1,
-            slicer_settings='x1c-m.json;x1c-p.json', slicer_filaments='x1c-f.json',
-        )
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[command.index('--load-settings') + 1], 'x1c-m.json;x1c-p.json')
-        self.assertEqual(command[command.index('--load-filaments') + 1], 'x1c-f.json')
-
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
-    def test_printer_presets_never_mix_with_env_filaments(self):
-        printer = Printer.objects.create(
-            name='P1S', bambuddy_printer_id=2, slicer_settings='p1s-m.json;p1s-p.json',
-        )
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[command.index('--load-settings') + 1], 'p1s-m.json;p1s-p.json')
-        self.assertNotIn('--load-filaments', command)
-
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
     def test_printer_without_presets_falls_back_to_env_pair(self):
         printer = Printer.objects.create(name='A1', bambuddy_printer_id=3)
         command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))

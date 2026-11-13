@@ -23,6 +23,10 @@ printer Pi (Pi 3, at school): johncad-agent -> Bambuddy REST API -> Bambuddy -> 
   it to the printer's queue as a staged item ("Queue Only"). Staff click
   **Plate cleared, release next** on `/queue/`; the agent starts the print and
   reports its status back by reading Bambuddy's queue.
+- **Adding printers** goes the same way: a teacher files a request on
+  `/printers/`, the agent adds the printer to Bambuddy, waits until Bambuddy
+  is connected to it, and reports its Bambuddy id; the site then creates the
+  printer. Not available in direct mode.
 - Setup: [agent/README.md](../agent/README.md). Day-to-day:
   [operations.md](operations.md#the-printer-pi).
 
@@ -60,6 +64,7 @@ site Pi itself and the site talks to it directly, with no agent
 | `jobs/agent_api.py`, `agent_urls.py` | The `/agent-api/v1/` endpoints |
 | `jobs/dispatch.py` | Job state changes: direct dispatch, status sync, release-next, and the agent's claim/report calls |
 | `agent/johncad_agent.py` | The print agent |
+| `jobs/printer_tickets.py` | Add-printer ticket state changes (claim, complete, fail, cancel) |
 | `jobs/bambuddy.py`, `api_views.py` | Direct mode only: Django wrapper and webhook |
 
 ## Bambuddy API facts
@@ -72,7 +77,16 @@ live Bambuddy through the agent:
   affected.
 - API base `/api/v1`. Key sent as `X-API-Key` (or `Authorization: Bearer
   bb_...`). The key needs **Manage library** (upload), **Add to queue**
-  (enqueue and start) and **Read status** (polling). Not Control Printer.
+  (enqueue and start) and **Read status** (polling), plus permission to add
+  and remove printers. Not Control Printer.
+- Printers (from the [API reference](https://wiki.bambuddy.cool/reference/api/),
+  read 2026-11-13; **not yet run against a live Bambuddy**): add with
+  `POST /printers` and `{"name", "ip_address", "access_code",
+  "serial_number"}`; `GET /printers` lists them with `id` and
+  `serial_number`; `GET /printers/{id}/status` has `"connected": true` once
+  Bambuddy has reached the printer; `DELETE /printers/{id}?delete_archives=false`
+  removes one. The agent adds a printer, finds its id by serial number, waits
+  for `connected`, and removes it again if it never connects.
 - Upload: `POST /library/files/`, multipart field `file`, response
   `{"id", "filename", "file_type", "file_size", "duplicate_of", ...}`.
 - Enqueue: `POST /queue/` with `{"library_file_id", "printer_id",
