@@ -11,7 +11,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
-[ -x .venv/bin/python ] || die "No .venv here. Run scripts/setup-pi.sh first."
+[ -x .venv/bin/python ] || die "No .venv here. Run scripts/setup-site.sh first."
 
 previous="$(git rev-parse HEAD)"
 

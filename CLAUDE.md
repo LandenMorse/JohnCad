@@ -2,12 +2,20 @@
 
 Django CMS for a 3D-printing pipeline: Students upload `.stl` files,
 request prints, teachers approve them, OrcaSlicer slices them to
-`.gcode.3mf`, and JohnCad dispatches them to Bambu printers through a
-self-hosted **Bambuddy** on the same Raspberry Pi. Django never talks to
-printers, only to Bambuddy's REST API; Bambuddy reports print status back via
-a webhook. The old Arduino/microSD printer controller has been removed. Plan,
-network setup (GL.iNet router + Tailscale subnet route to the school
-printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
+`.gcode.3mf`, and a **print agent** hands them to Bambu printers through a
+self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
+
+**Production runs on two Raspberry Pis** (see `README.md` for the diagram):
+- the **site Pi** (a Pi 5, at home): gunicorn + `slice_worker` (OrcaSlicer
+  Flatpak) on the host, Postgres in Docker, Caddy for HTTPS,
+  `BAMBUDDY_VIA_AGENT=True`. Installed by `scripts/setup-site.sh`.
+- the **printer Pi** (a Pi 3, at the school): Bambuddy in Docker and the
+  `johncad-agent` service (`agent/`). It only makes outbound HTTPS calls to
+  the site, so the school network needs no inbound access. There is no tunnel
+  or VPN (frp and Tailscale are not used).
+
+`docs/bambuddy.md` has how JohnCad uses Bambuddy and its API details;
+`docs/operations.md` is the runbook.
 
 ## Current state (implemented)
 
@@ -68,8 +76,8 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   actions on `Job`, at `/admin/jobs/job/`. Approving only sets `approved_at`;
   slicing runs asynchronously in the `slice_worker` management command
   (`jobs/management/commands/slice_worker.py`, claim/slice logic in
-  `jobs/services.py`; run as the `johncad-slicer` systemd service on the Pi
-  host). On success the job auto-advances to `queued`; on failure it stays in
+  `jobs/services.py`; run as the `johncad-slicer` systemd service on the
+  site Pi). On success the job auto-advances to `queued`; on failure it stays in
   `approved` with `Job.slicing_error` set (shown on `/review/`; Retry clears
   it). `AttachmentAdmin` lives in
   `attachments/admin.py`; the `User` re-registration lives in
@@ -77,9 +85,9 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 - **Slicing** (`jobs/slicing.py`): `slice_to_3mf(job)` shells out to
   the OrcaSlicer CLI (`subprocess.run`, no `shell=True`, `--export-3mf`) to
   convert the attachment's `.stl` into a `.gcode.3mf` in `job.sliced_file`
-  (renamed from `gcode` in migration 0004). OrcaSlicer is a **Flatpak on the Pi**
-  (`ORCA_SLICER_CMD`, default `flatpak run com.orcaslicer.OrcaSlicer`) and must
-  run on the host, not in the `web` container. Config via settings/env:
+  (renamed from `gcode` in migration 0004). OrcaSlicer is a **Flatpak on the site Pi**
+  (`ORCA_SLICER_CMD`, default `flatpak run com.orcaslicer.OrcaSlicer`) and
+  runs on the host, which is why the site is not run in Docker. Config via settings/env:
   `ORCA_SLICER_SETTINGS` (machine+process preset JSONs, `;`-separated,
   required), `ORCA_SLICER_FILAMENTS`, `ORCA_SLICER_DATADIR`,
   `ORCA_SLICER_TIMEOUT` (300s). Scratch output goes in
@@ -88,15 +96,16 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `MEDIA_ROOT` and the preset dir. Raises `SlicerNotConfigured` if settings are
   blank or the command isn't found, `SlicingFailed` (with captured
   stderr) on non-zero exit/timeout/no `.3mf` output — both caught by the
-  slice worker and stored in `slicing_error`. **Unverified on the Pi** (flags taken
-  from `--help`, not yet run end-to-end).
+  slice worker and stored in `slicing_error`. In production use.
 - Public **`/queue/`** page (`jobs` app; any logged-in Student, not just
   admins) lists `queued`/`working` jobs — attachment name, username, status.
-- Staff see a **Plate cleared, release next** button on `/queue/` that asks
-  Bambuddy to start the oldest staged job's queue item
-  (`dispatch.release_next` -> `POST /queue/<id>/start`).
-- **Dispatch** (`jobs/dispatch.py`, `dispatch_worker` command, run as the
-  `johncad-dispatcher` systemd service): claims sliced `queued` jobs with no
+- Staff see a **Plate cleared, release next** button on `/queue/`. With a
+  print agent it records `Job.release_requested_at` for the agent to carry out
+  (see below); in direct mode it asks Bambuddy to start the oldest staged job's
+  queue item (`dispatch.release_next` -> `POST /queue/<id>/start`).
+- **Direct-mode dispatch** (optional, `BAMBUDDY_VIA_AGENT=False`, **not used
+  in production**; `jobs/dispatch.py`, `dispatch_worker` command, the
+  `johncad-dispatcher` unit that `setup-site.sh` does not install): claims sliced `queued` jobs with no
   `bambuddy_queue_id`, uploads the file as `johncad-job-<id>.gcode.3mf`,
   enqueues it staged ("Queue Only") on the job's printer
   (`Job.printer.bambuddy_printer_id`, else the `BAMBUDDY_PRINTER_ID` fallback), stores
@@ -104,9 +113,10 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `dispatch_error`, shown on `/review/` with a Retry button. The worker also
   polls each in-flight job's queue item (`GET /queue/<id>`) every 60s as a
   fallback for missed webhooks.
-- **Print agent** (`BAMBUDDY_VIA_AGENT=True`, `agent/README.md`): for a site
-  hosted away from the printers (e.g. home Pi 5, printers at school behind a
-  network that only allows outbound HTTPS). `agent/johncad_agent.py` (no
+- **Print agent** (`BAMBUDDY_VIA_AGENT=True`, `agent/README.md`): the way jobs
+  reach the printers in production (site Pi 5 at home, printer Pi 3 and
+  printers at school behind a network that only allows outbound HTTPS).
+  `agent/johncad_agent.py` (no
   Django; needs `requests`, imports `jobs/bambuddy_client.py` from a repo
   checkout; systemd `johncad-agent`, config `/etc/johncad-agent.env`) runs
   next to Bambuddy and polls `/agent-api/v1/` (`jobs/agent_api.py`, state
@@ -122,18 +132,20 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `manage.py create_agent_key`): key `jca_...` stored as SHA-256, revocable,
   optional printer scope. The API 404s unless agent mode is on, and the
   `dispatch_worker` idles in agent mode. Under `/agent-api/`, not `/api/`, so
-  Caddy/nginx don't block it. Tested against a fake Bambuddy over real HTTP;
-  **not yet run against a real Bambuddy or the school network.**
+  Caddy doesn't block it. Tested against a fake Bambuddy over real HTTP, and in
+  production use at the school. CI also checks that an agent can connect to a
+  freshly installed site (`agent/johncad_agent.py --check`).
 - **Bambuddy client** (`jobs/bambuddy_client.py`, no Django imports, shared
   with the agent; `jobs/bambuddy.py` wraps it with settings and parses the
   webhook): every Bambuddy API detail lives here as constants, checked against Bambuddy's source (commit `98ecaf5`,
-  2026-10-22), not yet against a running instance. Base `/api/v1`, key in
+  2026-10-22) and in use against a live Bambuddy through the agent. Base `/api/v1`, key in
   `X-API-Key`; upload `POST /library/files/` (multipart `file`, returns
   `id`); enqueue `POST /queue/` with `library_file_id`, `printer_id`,
   `manual_start`; release `POST /queue/<id>/start`; queue item status
   `pending|printing|completed|failed|skipped|cancelled`. Key permissions:
   Manage library, Add to queue, Read status.
-- **Webhook** `POST /api/bambuddy/webhook/` (`jobs/api_views.py`, plain
+- **Webhook** (direct mode only, not used in production)
+  `POST /api/bambuddy/webhook/` (`jobs/api_views.py`, plain
   Django view; DRF was removed with the Arduino API): shared secret
   (`BAMBUDDY_WEBHOOK_SECRET`, as `Authorization: Bearer` from Bambuddy's
   webhook "Auth header" setting, or `?secret=`). Bambuddy's generic payload
@@ -142,13 +154,17 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `filename` (Bambuddy strips `.gcode.3mf`). Maps
   `print_start -> working`, `print_complete -> finished`,
   `print_failed`/`print_stopped` -> `failed`; repeats are no-ops, invalid
-  transitions 409. Local-only: both nginx configs 404 `/api/`, and Bambuddy
+  transitions 409. Local-only: the Caddyfile 404s `/api/`, and Bambuddy
   (host networking) posts to gunicorn on `127.0.0.1:8000`.
-- Settings/env: `BAMBUDDY_URL` (default `http://127.0.0.1:8080`), `BAMBUDDY_API_KEY`, `BAMBUDDY_WEBHOOK_SECRET`,
-  `BAMBUDDY_PRINTER_ID`, `BAMBUDDY_STAGED` (default True), `BAMBUDDY_TIMEOUT`.
-- Dockerized (Dockerfile, docker-compose with `db`/`web`/`nginx`/`bambuddy`,
-  `entrypoint.sh`) for deployment to a Raspberry Pi hosting the site +
-  Postgres + Bambuddy (`ghcr.io/maziggy/bambuddy`, port 8080, AGPL-3.0).
+- Settings/env: `BAMBUDDY_VIA_AGENT` (True in production), `BAMBUDDY_STAGED`
+  (default True, the agent follows it), `AGENT_CLAIM_TIMEOUT`,
+  `AGENT_POLL_INTERVAL`. Direct mode only: `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`,
+  `BAMBUDDY_WEBHOOK_SECRET`, `BAMBUDDY_PRINTER_ID`, `BAMBUDDY_TIMEOUT`; with an
+  agent these live in the printer Pi's `/etc/johncad-agent.env`.
+- `docker-compose.yml` has two services used on different machines: `db`
+  (Postgres 16, site Pi) and `bambuddy` (`ghcr.io/maziggy/bambuddy`, host
+  networking, port 8080, AGPL-3.0; printer Pi). The site itself is not run in
+  Docker (it needs the host's OrcaSlicer Flatpak), so there is no Dockerfile.
 
 ## Development and operations
 
@@ -156,26 +172,30 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
   `python manage.py test` (works from a clean clone; SQLite via
   `DATABASE_ENGINE=sqlite` is fine locally, CI uses Postgres 16),
   `python manage.py makemigrations --check --dry-run`, and
-  `shellcheck -x scripts/*.sh entrypoint.sh` if a script changed. Details:
+  `shellcheck -x scripts/*.sh` if a script changed. Details:
   `CONTRIBUTING.md`.
 - **CI** (`.github/workflows/ci.yml`): lint, Postgres tests with deprecation
-  warnings as errors, `check --deploy`, `pip-audit`, Docker build, and an
-  install drill that runs `scripts/setup-pi.sh` twice and then
-  `scripts/restore-drill.sh` on a clean Ubuntu runner.
+  warnings as errors, `check --deploy`, `pip-audit`, and an install drill that
+  runs `scripts/setup-site.sh` twice, checks an agent can connect to the site
+  (`agent/johncad_agent.py --check`), then runs `scripts/restore-drill.sh`, on a
+  clean Ubuntu runner.
 - **Tests** use `cms/test_runner.py` (plain static storage, temporary
   `MEDIA_ROOT`). `jobs/test_agent.py` is skipped on Windows (`fcntl`).
 - **Settings**: `DEBUG` defaults to `False`; without `DEBUG=True` the app
   won't start unless `SECRET_KEY` is set to a real value.
-- **Install and operate** with `scripts/`: `setup-pi.sh` (one-command Pi
-  install, idempotent), `update.sh` (backup, pull, migrate, restart, check
+- **Install and operate** the site Pi with `scripts/`: `setup-site.sh`
+  (one-command install, idempotent), `update.sh` (backup, pull, migrate, restart, check
   `/healthz/`), `backup.sh`/`restore.sh` (Postgres dump + `private_media`
-  archive). systemd units live in `deploy/systemd/`. Runbook:
+  archive). systemd units live in `deploy/systemd/` (`johncad-dispatcher` is
+  direct-mode only and not installed by default; `lib.sh` only restarts it where
+  it is enabled). Caddy config example: `deploy/caddy/`. Runbook:
   `docs/operations.md`.
 - **Migrations must keep the previous release working** (rollback is a code
   checkout, never a schema rollback): see `CONTRIBUTING.md`, "Database
   migrations".
-- The scripts are **not yet run on a real Raspberry Pi**; CI covers Ubuntu
-  x86 without the OrcaSlicer Flatpak.
+- The scripts are **not yet run on a real Raspberry Pi** from scratch (the
+  production Pis predate them); CI covers Ubuntu x86 without the OrcaSlicer
+  Flatpak, Caddy or the printer Pi.
 
 ## Job status enum
 
@@ -191,19 +211,16 @@ printers) and the unverified Bambuddy API details: `docs/BAMBUDDY_PLAN.md`.
 
 ## Still open / not implemented
 
-- **Print agent on real hardware**: run `--check` from the school Pi on the
-  school network (the domain must be reachable for it), then one job end to
-  end through a real Bambuddy.
-- **Run the Bambuddy calls against a live instance**: they're checked
-  against Bambuddy's source only. Watch for the 409 that
-  `POST /queue/<id>/start` returns when Bambuddy thinks the spool is short.
-- **Hand-upload one `.gcode.3mf`** through Bambuddy's UI and print it, to
-  confirm OrcaSlicer's CLI 3MF output works on the printer model.
-- **Verify OrcaSlicer end-to-end on the Pi** (headless Flatpak, filesystem
-  overrides, preset paths).
 - "Any X1C"-style automatic printer choice: teachers pick the printer by
   hand on `/review/` for now.
-- Pin the Bambuddy image version; pick one deployment path (the `web`
-  container still can't slice).
-- Repo cleanup before open-sourcing: LICENSE, configurable domain settings
-  (see `docs/BAMBUDDY_PLAN.md`); HTTPS setup is still manual (README).
+- Pin the Bambuddy image version on the printer Pi (`BAMBUDDY_VERSION`,
+  currently `latest`).
+- **Direct mode** (`dispatch_worker`, the webhook, `jobs/bambuddy.py`,
+  `BAMBUDDY_URL`/`API_KEY`/`WEBHOOK_SECRET` on the site) is kept as an
+  alternative but is not used or tested against a live Bambuddy. Remove it if
+  it stays unused; the agent path does not depend on it, though `dispatch.py`
+  is shared.
+- No installer for the printer Pi yet (it is set up by hand following
+  `agent/README.md`); HTTPS/Caddy setup on the site Pi is manual too.
+- LICENSE file, and configurable domain settings (the examples use
+  `print.example.org`).

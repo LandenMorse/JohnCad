@@ -12,7 +12,7 @@ python3-requests). No Django: it only imports jobs/bambuddy_client.py from
 this repo, so run it from a checkout of the repo.
 
 Configuration is read from the environment (see johncad-agent.env.example):
-  JOHNCAD_URL          https://riponhighschoolprint.com
+  JOHNCAD_URL          https://print.example.org
   JOHNCAD_AGENT_KEY    jca_... from /admin/ (Printer agents) or
                        `manage.py create_agent_key`
   BAMBUDDY_URL         default http://127.0.0.1:8080

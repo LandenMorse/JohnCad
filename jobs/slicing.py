@@ -50,9 +50,8 @@ def slice_to_3mf(job):
     On success, advances job.status to Job.Status.QUEUED and saves -- the
     slice and dispatch workers rely on that contract.
 
-    UNVERIFIED: `--export-3mf` alongside `--slice 0` is taken from the CLI's
-    --help; confirm on the Pi that the result prints when hand-uploaded to
-    Bambuddy (docs/BAMBUDDY_PLAN.md, build order step 1).
+    `--export-3mf` alongside `--slice 0` produces the file that is sent to
+    Bambuddy (docs/bambuddy.md); this is the path used in production.
     """
     presets, filaments = _presets_for(job)
     base_command = shlex.split(settings.ORCA_SLICER_CMD)

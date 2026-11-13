@@ -42,32 +42,35 @@ if SECRET_KEY in ('', 'change-me'):
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
-# CSRF_TRUSTED_ORIGINS, e.g. "https://rhsprint.crabdance.com" (comma-separated for
-# multiple). Required once the site is reached through the nginx proxy on a
-# real domain, for POSTs like login/upload/admin to pass Django's CSRF check.
+# CSRF_TRUSTED_ORIGINS, e.g. "https://print.example.org" (comma-separated for
+# multiple). Required once the site is reached through Caddy on a real
+# domain, for POSTs like login/upload/admin to pass Django's CSRF check.
 _csrf_trusted_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
 CSRF_TRUSTED_ORIGINS = [o for o in _csrf_trusted_origins.split(',') if o]
 
-# Trust the X-Forwarded-Proto/Host headers nginx sets, so Django knows a
+# Trust the X-Forwarded-Proto/Host headers Caddy sets, so Django knows a
 # request arrived over HTTPS even though gunicorn itself only speaks HTTP.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
-# Set HTTPS_ENABLED=True once the site is served over HTTPS (nginx + certs):
+# Set HTTPS_ENABLED=True once the site is served over HTTPS (Caddy):
 # marks session/CSRF cookies Secure so they're never sent over plain HTTP.
 if os.environ.get('HTTPS_ENABLED', 'False') == 'True':
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 
-# `manage.py check --deploy` (run in CI) warns about these two, but the proxy
-# in front of gunicorn already does both jobs, so Django doesn't repeat them:
-#   W004 HSTS header    -> nginx/johncad.host.conf sets it (the Caddy/frp
-#                          setup in deploy/frp does not send HSTS)
-#   W008 HTTPS redirect -> nginx/johncad.host.conf; Caddy does it by default
+# `manage.py check --deploy` (run in CI) warns about these two. Both are
+# deliberate exceptions:
+#   W004 HSTS header    -> not sent. HSTS is hard to undo once browsers have
+#                          seen it, so turning it on is a decision for the
+#                          site owner, not a default.
+#   W008 HTTPS redirect -> Caddy redirects http:// to https:// by itself
+#                          (deploy/caddy/Caddyfile.example); gunicorn only
+#                          ever sees proxied requests.
 SILENCED_SYSTEM_CHECKS = ['security.W004', 'security.W008']
 
 # Large .stl uploads shouldn't be rejected by Django's default 2.5MB cap;
-# keep in sync with nginx's client_max_body_size.
+# keep in sync with Caddy's request_body max_size (deploy/caddy/Caddyfile.example).
 DATA_UPLOAD_MAX_MEMORY_SIZE = 512 * 1024 * 1024
 
 
@@ -226,8 +229,11 @@ ORCA_SLICER_TIMEOUT = int(os.environ.get('ORCA_SLICER_TIMEOUT', '300'))
 
 # Bambuddy (jobs/bambuddy.py, jobs/dispatch.py)
 
-# Base URL of Bambuddy, which runs on the same host as Django. It listens on
-# 8080 because gunicorn has 8000 (docker-compose `bambuddy` service).
+# Direct mode only (BAMBUDDY_VIA_AGENT=False): Bambuddy runs on the same host
+# as Django and these settings point at it. With a print agent, which is how
+# the school runs, none of the BAMBUDDY_* settings below except
+# BAMBUDDY_STAGED are used here; they go in the agent's config instead.
+# Base URL of Bambuddy. It listens on 8080 because gunicorn has 8000.
 BAMBUDDY_URL = os.environ.get('BAMBUDDY_URL', 'http://127.0.0.1:8080')
 # API key created in Bambuddy (Settings > API keys) with "Manage library",
 # "Add to queue" and "Read status". Blank means dispatch isn't configured.
@@ -243,10 +249,10 @@ BAMBUDDY_STAGED = os.environ.get('BAMBUDDY_STAGED', 'True') == 'True'
 BAMBUDDY_TIMEOUT = int(os.environ.get('BAMBUDDY_TIMEOUT', '60'))
 
 # Print agent (jobs/agent_api.py, agent/). True when this site is NOT next to
-# Bambuddy (e.g. hosted at home) and a print agent on the printers' network
-# pulls jobs from /agent-api/ over HTTPS instead. Then the dispatch_worker
-# isn't used and "release next" is handed to the agent. Agents and their keys
-# are managed in /admin/.
+# Bambuddy: a print agent on the printers' network (the school Pi) pulls jobs
+# from /agent-api/ over HTTPS. Then the dispatch_worker isn't used and
+# "release next" is handed to the agent. Agents and their keys are managed in
+# /admin/. This is the supported production setup (docs/bambuddy.md).
 BAMBUDDY_VIA_AGENT = os.environ.get('BAMBUDDY_VIA_AGENT', 'False') == 'True'
 # A job an agent claimed but stopped downloading (no request for its file) is
 # offered again after this many seconds.
@@ -257,7 +263,7 @@ AGENT_POLL_INTERVAL = int(os.environ.get('AGENT_POLL_INTERVAL', '15'))
 
 # Logging
 
-# Everything goes to the console (terminal / `docker compose logs` / journald)
+# Everything goes to the console (terminal / journald)
 # and to a rotating file at LOG_DIR/johncad.log (default: <project>/logs/).
 LOG_DIR = Path(os.environ.get('LOG_DIR', BASE_DIR / 'logs'))
 LOG_DIR.mkdir(parents=True, exist_ok=True)

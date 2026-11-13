@@ -3,8 +3,14 @@
 
 # Project root = parent of scripts/.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Services to stop and restart: the site and the slicer. The Bambuddy
+# dispatcher is only part of the direct setup (no print agent), so it is
+# included only where it is enabled.
 # shellcheck disable=SC2034  # used by the scripts that source this file
-SERVICES=(johncad johncad-slicer johncad-dispatcher)
+SERVICES=(johncad johncad-slicer)
+if systemctl is-enabled --quiet johncad-dispatcher 2>/dev/null; then
+    SERVICES+=(johncad-dispatcher)
+fi
 
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33mWARNING: %s\033[0m\n' "$*" >&2; }

@@ -1,4 +1,7 @@
-# Installed by scripts/setup-pi.sh, which replaces @USER@ and @DIR@.
+# OPTIONAL: only for the direct setup, where Bambuddy runs on the same Pi as
+# the site (BAMBUDDY_VIA_AGENT=False, see docs/bambuddy.md). With a print
+# agent this service is not used, and scripts/setup-site.sh does not install
+# it. To use it, replace @USER@ and @DIR@ and copy it to /etc/systemd/system/.
 [Unit]
 Description=JohnCad Bambuddy dispatch worker
 After=network.target docker.service

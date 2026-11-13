@@ -1,3 +1,10 @@
+# Two services, run on different machines:
+#
+#   db        Postgres for the JohnCad site.   Site Pi:    docker compose up -d db
+#   bambuddy  Talks to the printers.           School Pi:  docker compose up -d bambuddy
+#
+# (scripts/setup-site.sh starts `db` for you. The site itself, gunicorn and the
+# workers, runs on the host, not in Docker: it needs the OrcaSlicer Flatpak.)
 services:
   db:
     image: postgres:16
@@ -16,35 +23,10 @@ services:
       timeout: 5s
       retries: 10
 
-  web:
-    build: .
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      POSTGRES_HOST: db
-    volumes:
-      - private_media_data:/app/private_media
-    depends_on:
-      db:
-        condition: service_healthy
-
-  nginx:
-    image: nginx:alpine
-    restart: unless-stopped
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    ports:
-      - "80:80"
-      # - "443:443"   # uncomment once TLS certs are set up, see nginx/nginx.conf
-    depends_on:
-      - web
-
-  # Bambuddy talks to the printers (FTPS 990 + MQTT 8883) and exposes the
-  # REST API JohnCad's dispatch_worker uses. Host networking (Bambuddy's own
-  # recommendation on Linux) lets it reach printers over Tailscale routes and
-  # post its webhook to gunicorn on 127.0.0.1:8000, so the webhook never goes
-  # through public nginx. It listens on BAMBUDDY_PORT (8080, since gunicorn
-  # has 8000). Start it alone with: docker compose up -d bambuddy
+  # Bambuddy talks to the printers (FTPS 990 + MQTT 8883) and exposes the REST
+  # API the print agent uses. Host networking (Bambuddy's own recommendation on
+  # Linux) lets it reach the printers on the local network. It listens on
+  # BAMBUDDY_PORT (default 8080).
   bambuddy:
     # Pin a release tag (BAMBUDDY_VERSION in .env) once one is chosen;
     # "latest" can change printer behavior under you.
@@ -60,6 +42,5 @@ services:
 
 volumes:
   postgres_data:
-  private_media_data:
   bambuddy_data:
   bambuddy_logs:
