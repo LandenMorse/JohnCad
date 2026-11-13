@@ -181,6 +181,10 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Tests use plain static storage and a throwaway MEDIA_ROOT, so the suite runs
+# from a clean clone and never writes into real uploads (cms/test_runner.py).
+TEST_RUNNER = 'cms.test_runner.JohnCadTestRunner'
+
 
 # Media files (user uploads)
 
