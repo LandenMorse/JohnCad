@@ -1,0 +1,9 @@
+# Lint config (CI runs `ruff check .`). Kept to real-bug rules on purpose:
+# pyflakes (unused/undefined names) and pycodestyle errors. Formatting is not
+# enforced, so existing code style stays as it is.
+target-version = "py313"
+extend-exclude = ["*/migrations/*"]
+
+[lint]
+select = ["E", "F"]
+ignore = ["E501"]  # line length

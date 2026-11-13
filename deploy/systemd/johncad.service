@@ -1,0 +1,14 @@
+# Installed by scripts/setup-pi.sh, which replaces @USER@ and @DIR@.
+[Unit]
+Description=JohnCad (gunicorn)
+After=network.target docker.service
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+EnvironmentFile=@DIR@/.env
+ExecStart=@DIR@/.venv/bin/gunicorn cms.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 900
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

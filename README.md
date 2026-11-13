@@ -6,13 +6,39 @@ approved files to `.gcode.3mf`, and JohnCad sends them to Bambu printers
 through a self-hosted [Bambuddy](https://github.com/maziggy/bambuddy) on the
 same Raspberry Pi. Django never talks to the printers directly.
 
-See `CLAUDE.md` for the current implementation status and open items, and
-`docs/BAMBUDDY_PLAN.md` for the Bambuddy plan, network setup and what is
-still unverified.
+## Quick start
+
+**Running it for a class** (a Raspberry Pi with Raspberry Pi OS 64-bit):
+
+```bash
+git clone https://github.com/LandenMorse/JohnCad.git && cd JohnCad
+scripts/setup-pi.sh
+```
+
+That installs everything, starts the site and sets up nightly backups. Then
+follow [Raspberry Pi deployment](#raspberry-pi-deployment-production) for the
+three things only you can do: a web address, your printers, and slicer
+presets.
+
+**Working on the code:** see [CONTRIBUTING.md](CONTRIBUTING.md). You can run
+and test it on any computer in about five minutes, without a Pi or a printer.
+
+## Documentation
+
+| | |
+|---|---|
+| This README | Installing, configuring, and what each part of the program does |
+| [docs/operations.md](docs/operations.md) | Updating, backups, restoring, rolling back, troubleshooting |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, CI, conventions, migration rules |
+| [agent/README.md](agent/README.md) | Site at home, printers at school (print agent) |
+| [deploy/frp/README.md](deploy/frp/README.md) | Serving through a tunnel when the school blocks incoming connections |
+| [docs/BAMBUDDY_PLAN.md](docs/BAMBUDDY_PLAN.md) | Bambuddy plan, network setup and what is still unverified |
+| [CLAUDE.md](CLAUDE.md) | Current implementation status and open items |
 
 ## Contents
 
-- [Setup](#setup)
+- [Quick start](#quick-start)
+- [Setup](#setup) (development)
 - [Raspberry Pi deployment](#raspberry-pi-deployment-production)
 - [Helper commands](#helper-commands)
 - [Program layout](#program-layout)
@@ -20,6 +46,10 @@ still unverified.
 - [Features](#features)
 
 ## Setup
+
+For local development. The shortest path (SQLite, no Docker) is in
+[CONTRIBUTING.md](CONTRIBUTING.md); the steps below use Postgres, like
+production.
 
 ### Requirements
 
@@ -123,167 +153,43 @@ publishes official arm64 images.
 ### Raspberry Pi deployment (production)
 
 Production shape: **Django (gunicorn) runs directly on the Pi** so it can call
-the OrcaSlicer Flatpak; **Postgres runs in Docker**. Everything below is run
-on the Pi after cloning.
+the OrcaSlicer Flatpak; **Postgres runs in Docker**. Day-to-day running
+(updates, backups, restoring, troubleshooting) is in
+[docs/operations.md](docs/operations.md).
 
-**1. Install prerequisites** (Raspberry Pi OS 64-bit recommended):
-
-```bash
-sudo apt update
-sudo apt install -y git flatpak python3-venv docker.io docker-compose-plugin
-sudo usermod -aG docker $USER      # log out/in afterwards
-flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak install flathub com.orcaslicer.OrcaSlicer   # skip if already installed
-```
-
-Python 3.13 is required. If `python3 --version` is older, install 3.13
-(e.g. via `pyenv` or a deadsnakes-style build) and use it for the venv.
-
-**2. Clone and install:**
+**1. Install.** On the Pi (Raspberry Pi OS 64-bit; Python 3.13 is required,
+which Raspberry Pi OS 13 "Trixie" includes):
 
 ```bash
-git clone <repo-url> JohnCad && cd JohnCad
-python3.13 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+sudo apt install -y git
+git clone https://github.com/LandenMorse/JohnCad.git && cd JohnCad
+scripts/setup-pi.sh
 ```
 
-**3. Configure `.env`** (`cp .env.example .env`, then edit):
+The script is safe to run again, and does the following:
 
-```
-SECRET_KEY=<long random string: python -c "import secrets; print(secrets.token_urlsafe(50))">
-DEBUG=False
-ALLOWED_HOSTS=rhsprint.crabdance.com,<pi-ip>,localhost
-CSRF_TRUSTED_ORIGINS=https://rhsprint.crabdance.com
-HTTPS_ENABLED=False
-POSTGRES_PASSWORD=<strong password>
-POSTGRES_HOST=localhost
-ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
-ORCA_SLICER_FILAMENTS=/home/<user>/orca/filament.json
-```
+| Step | What happens |
+|---|---|
+| Packages | Installs Docker, Python venv support, Flatpak and the OrcaSlicer Flatpak (`--no-orca` skips OrcaSlicer) |
+| Python | Creates `.venv/` and installs `requirements.txt` |
+| Settings | Writes `.env` from `.env.example` with a new `SECRET_KEY`, `POSTGRES_PASSWORD` and `BAMBUDDY_WEBHOOK_SECRET`, `DEBUG=False`, and this Pi's names in `ALLOWED_HOSTS`. An existing `.env` is never touched |
+| Database | Starts Postgres (`docker compose up -d db`), runs `migrate` and `collectstatic` |
+| Services | Installs the units in [`deploy/systemd/`](deploy/systemd/): `johncad` (gunicorn on `127.0.0.1:8000`), `johncad-slicer`, `johncad-dispatcher`, and a nightly `johncad-backup` timer |
+| Admin login | Asks for a username and password if no admin exists yet |
 
-Use the absolute paths of the Bambu machine/process/filament preset `.json`
-files already on the Pi. Set `POSTGRES_PASSWORD` **before** the first
-`docker compose up` — Postgres only reads it when it initializes its volume.
+When it finishes, the site answers on the Pi itself at
+`http://127.0.0.1:8000/`. Gunicorn listens on localhost only; the next step
+makes it reachable. Static files are served by WhiteNoise. The compose
+`web`/`nginx` services and `nginx/nginx.conf` are not used in this setup (the
+`web` container can't reach the host's Flatpak).
 
-**4. Start Postgres, migrate, create the admin login:**
+Without `johncad-slicer` running, approved jobs sit at "Waiting to slice";
+`johncad-dispatcher` sends sliced jobs to Bambuddy and, every 60s, polls
+Bambuddy's queue in case a webhook was missed. One-off runs without the
+services: `python manage.py slice_worker --once`,
+`python manage.py dispatch_worker --once`.
 
-```bash
-docker compose up -d db
-python manage.py migrate
-python manage.py collectstatic --noinput
-python manage.py createsuperuser
-```
-
-**5. Let the Flatpak sandbox see your files** (same Linux user that runs
-Django):
-
-```bash
-flatpak override --user --filesystem=$PWD/private_media com.orcaslicer.OrcaSlicer
-flatpak override --user --filesystem=/home/<user>/orca:ro com.orcaslicer.OrcaSlicer
-```
-
-**6. Smoke-test slicing before relying on it:**
-
-```bash
-mkdir -p private_media/slicing_tmp
-flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir $PWD/private_media/slicing_tmp   --load-settings "/home/<user>/orca/machine.json;/home/<user>/orca/process.json" some_model.stl
-```
-
-It should write a `.gcode` file. Add `--export-3mf out.gcode.3mf` to check
-the `.gcode.3mf` that JohnCad actually sends to Bambuddy. If it fails for lack of a display, try
-`ORCA_SLICER_CMD=xvfb-run -a flatpak run com.orcaslicer.OrcaSlicer` in `.env`
-(`sudo apt install xvfb`). This path is untested on real hardware.
-
-**7. Run Django as a service.** Create `/etc/systemd/system/johncad.service`
-(replace `<user>` and the path):
-
-```ini
-[Unit]
-Description=JohnCad (gunicorn)
-After=network.target docker.service
-
-[Service]
-User=<user>
-WorkingDirectory=/home/<user>/JohnCad
-EnvironmentFile=/home/<user>/JohnCad/.env
-ExecStart=/home/<user>/JohnCad/.venv/bin/gunicorn cms.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 900
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now johncad
-sudo systemctl status johncad
-```
-
-**Slicing worker.** Approving a job doesn't slice it in the web request; the
-`slice_worker` command does, in the background. It must run on the host (next
-to the OrcaSlicer Flatpak) with the same `.env`. Create
-`/etc/systemd/system/johncad-slicer.service`:
-
-```ini
-[Unit]
-Description=JohnCad slicing worker
-After=network.target docker.service
-
-[Service]
-User=<user>
-WorkingDirectory=/home/<user>/JohnCad
-EnvironmentFile=/home/<user>/JohnCad/.env
-ExecStart=/home/<user>/JohnCad/.venv/bin/python manage.py slice_worker
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now johncad-slicer
-journalctl -u johncad-slicer -f     # watch it slice
-```
-
-Without this service running, approved jobs just sit at "Waiting to slice".
-Jobs approved before the worker existed are picked up automatically. For a
-one-off run without the service: `python manage.py slice_worker --once`.
-
-**Dispatch worker.** The `dispatch_worker` command sends sliced jobs to
-Bambuddy and, every 60s, polls Bambuddy's queue in case a webhook was missed.
-Create `/etc/systemd/system/johncad-dispatcher.service`:
-
-```ini
-[Unit]
-Description=JohnCad Bambuddy dispatch worker
-After=network.target docker.service
-
-[Service]
-User=<user>
-WorkingDirectory=/home/<user>/JohnCad
-EnvironmentFile=/home/<user>/JohnCad/.env
-ExecStart=/home/<user>/JohnCad/.venv/bin/python manage.py dispatch_worker
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now johncad-dispatcher
-journalctl -u johncad-dispatcher -f
-```
-
-Gunicorn listens on localhost only; nginx (next step) is the public entry
-point. Static files are served by WhiteNoise. The compose `db` service has `restart: unless-stopped`, so
-Postgres comes back after reboots. The compose `web`/`nginx` services and `nginx/nginx.conf` are not
-used in this setup (the `web` container can't reach the host's Flatpak);
-nginx runs on the host using `nginx/johncad.host.conf`.
-
-**8. nginx + HTTPS.** Requires a real domain name pointing at the Pi (A/AAAA
+**2. A web address: nginx + HTTPS.** Requires a real domain name pointing at the Pi (A/AAAA
 record) with ports 80 and 443 forwarded to it from your router. The config
 returns 404 for `/api/`: the Bambuddy webhook is only reachable on the Pi
 itself.
@@ -310,15 +216,89 @@ certs: `echo 'systemctl reload nginx' | sudo tee /etc/letsencrypt/renewal-hooks/
 Finally change `HTTPS_ENABLED=False` to `True` in `.env` (no inline comments in `.env` — systemd doesn't strip them) and `sudo systemctl restart johncad`.
 The site is at `https://rhsprint.crabdance.com/`. Uploads up to 512MB are allowed
 (`client_max_body_size` in the nginx config).
+Add the domain to `ALLOWED_HOSTS` and set
+`CSRF_TRUSTED_ORIGINS=https://<your-domain>` in `.env` as well.
 
-**9. Finish up:** log into `/admin/`, then set up Bambuddy (next section).
-After pulling updates later:
+If the school network can't accept incoming connections, use
+[an frp tunnel](#serving-through-an-frp-tunnel-no-inbound-access-at-the-school)
+or the [print agent](#site-at-home-printers-at-school-print-agent) instead of
+this step.
+
+**3. Printers.** Follow [Bambuddy setup](#bambuddy-setup).
+
+**4. Slicer presets.** Put the Bambu machine/process/filament preset `.json`
+files somewhere on the Pi (e.g. `/home/<user>/orca/`) and let the OrcaSlicer
+sandbox read them (the setup script already did this for `private_media/`):
 
 ```bash
-git pull && source .venv/bin/activate && pip install -r requirements.txt
-python manage.py migrate && python manage.py collectstatic --noinput
-sudo systemctl restart johncad johncad-slicer johncad-dispatcher
+flatpak override --user --filesystem=/home/<user>/orca:ro com.orcaslicer.OrcaSlicer
 ```
+
+Enter the paths on each Printer in `/admin/`, or for a single-printer setup
+in `.env`:
+
+```
+ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
+ORCA_SLICER_FILAMENTS=/home/<user>/orca/filament.json
+```
+
+After editing `.env`, run
+`sudo systemctl restart johncad johncad-slicer johncad-dispatcher`. Don't put
+comments on the same line as a value in `.env`: systemd doesn't strip them.
+
+Smoke-test slicing before relying on it:
+
+```bash
+mkdir -p private_media/slicing_tmp
+flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir $PWD/private_media/slicing_tmp   --load-settings "/home/<user>/orca/machine.json;/home/<user>/orca/process.json" some_model.stl
+```
+
+It should write a `.gcode` file. Add `--export-3mf out.gcode.3mf` to check
+the `.gcode.3mf` that JohnCad actually sends to Bambuddy. If it fails for lack of a display, try
+`ORCA_SLICER_CMD=xvfb-run -a flatpak run com.orcaslicer.OrcaSlicer` in `.env`
+(`sudo apt install xvfb`). This path is untested on real hardware.
+
+**5. Keep it healthy.** To get a new version later:
+
+```bash
+scripts/update.sh
+```
+
+It backs up first, then updates, restarts and checks the site. Backups run
+nightly into `backups/`; set `BACKUP_DIR` in `.env` to a USB drive so they
+survive the SD card failing. Restoring, rolling back and troubleshooting:
+[docs/operations.md](docs/operations.md).
+
+<details>
+<summary>Installing by hand instead of with the script</summary>
+
+```bash
+sudo apt update
+sudo apt install -y git curl flatpak python3-venv docker.io docker-compose-plugin
+sudo usermod -aG docker $USER      # log out/in afterwards
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user flathub com.orcaslicer.OrcaSlicer
+
+python3.13 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+cp .env.example .env     # then set SECRET_KEY, DEBUG=False, ALLOWED_HOSTS,
+                         # POSTGRES_PASSWORD (before the first "docker compose
+                         # up": Postgres only reads it when it creates its volume)
+
+docker compose up -d db
+.venv/bin/python manage.py migrate
+.venv/bin/python manage.py collectstatic --noinput
+.venv/bin/python manage.py createsuperuser
+flatpak override --user --filesystem=$PWD/private_media com.orcaslicer.OrcaSlicer
+
+# Services: replace @USER@ and @DIR@ in each file under deploy/systemd/,
+# copy them to /etc/systemd/system/, then:
+sudo systemctl daemon-reload
+sudo systemctl enable --now johncad johncad-slicer johncad-dispatcher johncad-backup.timer
+```
+
+</details>
 
 ### Serving through an frp tunnel (no inbound access at the school)
 
@@ -425,7 +405,9 @@ Three Django apps, split by feature, plus one project-level shared template:
 ```
 JohnCad/
 ├── cms/                     # Django project (settings, root urls, wsgi/asgi)
-│   └── settings.py          # all configuration, env-driven (see .env.example)
+│   ├── settings.py          # all configuration, env-driven (see .env.example)
+│   ├── views.py             # /healthz/
+│   └── test_runner.py       # lets tests run from a clean clone
 ├── templates/base.html      # shared layout every app's templates extend
 ├── accounts/                 # Student identity
 │   ├── views.py                 # CmsLoginView
@@ -455,14 +437,21 @@ JohnCad/
 │   ├── migrations/                           # schema history
 │   └── templates/jobs/                         # queue.html
 ├── agent/                      # print agent for the school Pi (johncad_agent.py, systemd unit, README)
+├── scripts/                    # setup-pi.sh, update.sh, backup.sh, restore.sh, restore-drill.sh
+├── deploy/systemd/             # service and backup-timer units that setup-pi.sh installs
+├── deploy/frp/                 # tunnel example configs
+├── .github/                    # CI workflow, Dependabot, pull request template
 ├── static/css/site.css        # the site's one stylesheet
 ├── nginx/nginx.conf            # reverse-proxy config for the Docker stack
 ├── Dockerfile                   # web image: Python + gunicorn
 ├── docker-compose.yml             # db + web + nginx + bambuddy services
 ├── entrypoint.sh                    # container startup: migrate, collectstatic, then exec gunicorn
 ├── requirements.txt                  # Python dependencies
+├── requirements-dev.txt              # ruff and pip-audit, for development and CI
 ├── .env.example                       # documented list of all env vars
 ├── CLAUDE.md                           # architecture notes, current status, open items
+├── CONTRIBUTING.md                     # development setup, tests, CI, conventions
+├── docs/operations.md                  # updating, backups, restoring, troubleshooting
 └── docs/BAMBUDDY_PLAN.md                # Bambuddy plan, network setup, unverified items
 ```
 
@@ -656,7 +645,12 @@ job's Bambuddy queue item catches up on anything the webhook missed.
 
 ### Deployment
 
-Dockerized for a Raspberry Pi: `Dockerfile` (Python + gunicorn,
+Production runs on the Pi host, installed by `scripts/setup-pi.sh` (see
+[Raspberry Pi deployment](#raspberry-pi-deployment-production)); every change
+is checked by CI, including a full install and a backup-and-restore drill
+(see [CONTRIBUTING.md](CONTRIBUTING.md#what-ci-checks)).
+
+Also Dockerized: `Dockerfile` (Python + gunicorn,
 running as a non-root user), `docker-compose.yml` (Postgres + the Django app
 + nginx reverse proxy + Bambuddy), `entrypoint.sh` (runs migrations and `collectstatic`
 before starting gunicorn). Static files are served via WhiteNoise from

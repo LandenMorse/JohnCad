@@ -1,0 +1,14 @@
+# Installed by scripts/setup-pi.sh, which replaces @USER@ and @DIR@.
+[Unit]
+Description=JohnCad Bambuddy dispatch worker
+After=network.target docker.service
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+EnvironmentFile=@DIR@/.env
+ExecStart=@DIR@/.venv/bin/python manage.py dispatch_worker
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
