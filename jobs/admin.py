@@ -50,13 +50,13 @@ class JobAdmin(admin.ModelAdmin):
 
 @admin.register(PrinterModel)
 class PrinterModelAdmin(admin.ModelAdmin):
-    list_display = ('name', 'settings_path')
+    list_display = ('name', 'template_path')
     search_fields = ('name',)
 
 
 @admin.register(Filament)
 class FilamentAdmin(admin.ModelAdmin):
-    list_display = ('filament_type', 'color', 'preset_path')
+    list_display = ('filament_type', 'color')
     list_filter = ('filament_type',)
     search_fields = ('filament_type', 'color')
 
@@ -69,7 +69,7 @@ class PrinterFilamentInline(admin.TabularInline):
 
 @admin.register(Printer)
 class PrinterAdmin(admin.ModelAdmin):
-    list_display = ('name', 'printer_model', 'bambuddy_printer_id', 'serial_number', 'is_active')
+    list_display = ('name', 'printer_model', 'template_path', 'bambuddy_printer_id', 'serial_number', 'is_active')
     list_filter = ('is_active', 'printer_model')
     search_fields = ('name', 'serial_number')
     inlines = [PrinterFilamentInline]

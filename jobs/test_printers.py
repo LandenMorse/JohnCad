@@ -1,6 +1,8 @@
 """Printer models, filaments, the teacher /printers/ page and the
 "add printer" tickets the print agent carries out (jobs/printer_tickets.py)."""
 import json
+import os
+from unittest import skipIf
 from datetime import timedelta
 from unittest import mock
 
@@ -39,15 +41,9 @@ class PrinterTestBase(ReviewTestBase):
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
-        cls.x1c_model = PrinterModel.objects.create(
-            name='X1 Carbon 0.4', settings_path='x1c-machine.json;x1c-process.json',
-        )
-        cls.pla_black = Filament.objects.create(
-            filament_type='PLA', color='Black', preset_path='pla-black.json',
-        )
-        cls.petg_white = Filament.objects.create(
-            filament_type='PETG', color='White', preset_path='petg-white.json',
-        )
+        cls.x1c_model = PrinterModel.objects.create(name='X1 Carbon 0.4')
+        cls.pla_black = Filament.objects.create(filament_type='PLA', color='Black')
+        cls.petg_white = Filament.objects.create(filament_type='PETG', color='White')
 
     def ticket(self, **kwargs):
         fields = {**VALID, 'printer_model': self.x1c_model, 'requested_by': self.teacher, **kwargs}
@@ -69,36 +65,47 @@ class PrinterModelSlicingTests(PrinterTestBase):
         kwargs.setdefault('printer_model', self.x1c_model)
         return Printer.objects.create(name='X1C', bambuddy_printer_id=1, **kwargs)
 
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
-    def test_model_presets_and_slot_filaments_replace_env(self):
-        printer = self.printer()
-        # Created out of order: slot order, not creation order, is what counts.
-        PrinterFilament.objects.create(printer=printer, filament=self.petg_white, slot=3)
-        PrinterFilament.objects.create(printer=printer, filament=self.pla_black, slot=1)
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(
-            command[command.index('--load-settings') + 1], 'x1c-machine.json;x1c-process.json',
-        )
-        self.assertEqual(
-            command[command.index('--load-filaments') + 1], 'pla-black.json;petg-white.json',
-        )
+    def template(self, name):
+        path = os.path.join(os.path.dirname(self.template_file), name)
+        with open(path, 'wb') as f:
+            f.write(b'template')
+        return path
 
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
-    def test_model_presets_never_mix_with_env_filaments(self):
+    def test_printer_models_template_replaces_the_env_default(self):
+        self.x1c_model.template_path = self.template('x1c.3mf')
+        self.x1c_model.save()
         command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=self.printer()))
-        self.assertNotIn('--load-filaments', command)
+        self.assertEqual(command[-2], self.x1c_model.template_path)
 
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
-    def test_printer_without_model_falls_back_to_env_pair(self):
+    def test_printers_own_template_beats_its_models(self):
+        self.x1c_model.template_path = self.template('x1c.3mf')
+        self.x1c_model.save()
+        own = self.template('lab-x1c.3mf')
+        command = self.slice(
+            self.make_job(status=Job.Status.APPROVED, printer=self.printer(template_path=own)),
+        )
+        self.assertEqual(command[-2], own)
+
+    def test_model_without_template_falls_back_to_the_env_default(self):
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=self.printer()))
+        self.assertEqual(command[-2], self.template_file)
+
+    def test_printer_without_model_falls_back_to_the_env_default(self):
         printer = self.printer(printer_model=None)
         command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[command.index('--load-settings') + 1], 'env-m.json;env-p.json')
-        self.assertEqual(command[command.index('--load-filaments') + 1], 'env-f.json')
+        self.assertEqual(command[-2], self.template_file)
 
-    @override_settings(ORCA_SLICER_SETTINGS='')
-    def test_printer_without_model_or_env_is_not_configured(self):
+    def test_loaded_filaments_are_not_passed_to_the_slicer(self):
+        printer = self.printer()
+        PrinterFilament.objects.create(printer=printer, filament=self.pla_black, slot=1)
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
+        self.assertNotIn('--load-filaments', command)
+        self.assertNotIn('--load-settings', command)
+
+    @override_settings(ORCA_SLICER_TEMPLATE='')
+    def test_no_template_anywhere_is_not_configured(self):
         job = self.make_job(status=Job.Status.APPROVED, printer=self.printer(printer_model=None))
-        with self.assertRaisesMessage(SlicerNotConfigured, 'printer model'):
+        with self.assertRaisesMessage(SlicerNotConfigured, 'No slicer template'):
             slice_to_3mf(job)
 
 
@@ -121,7 +128,7 @@ class PrinterFilamentModelTests(PrinterTestBase):
 
     def test_filament_type_and_color_are_unique_together(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
-            Filament.objects.create(filament_type='PLA', color='Black', preset_path='other.json')
+            Filament.objects.create(filament_type='PLA', color='Black')
 
     def test_filaments_form_replaces_slots(self):
         PrinterFilament.objects.create(printer=self.printer, filament=self.pla_black, slot=1)
@@ -134,7 +141,6 @@ class PrinterFilamentModelTests(PrinterTestBase):
             list(self.printer.filament_slots.values_list('slot', 'filament__color')),
             [(2, 'White'), (4, 'Black')],
         )
-        self.assertEqual(self.printer.filament_preset_paths(), 'petg-white.json;pla-black.json')
 
 
 class AddPrinterTicketFormTests(PrinterTestBase):
@@ -269,7 +275,9 @@ class PrintersPageTests(PrinterTestBase):
         self.assertEqual(self.client.post(url, data).status_code, 403)
         self.client.force_login(self.teacher)
         self.assertRedirects(self.client.post(url, data), reverse('printers'))
-        self.assertEqual(printer.filament_preset_paths(), 'pla-black.json')
+        self.assertEqual(
+            list(printer.filament_slots.values_list('slot', 'filament__color')), [(1, 'Black')],
+        )
         response = self.client.get(reverse('printers'))
         self.assertContains(response, f'value="{self.pla_black.pk}" selected')
 
@@ -428,6 +436,59 @@ class AgentPrinterTicketApiTests(PrinterTestBase):
         self.assertEqual(self.api('post', f'printer-tickets/{ticket.id}/claim/').status_code, 404)
 
 
+class TemplateMigrationTests(TransactionTestCase):
+    """0009 moves slicing to template paths and stops using the preset path
+    columns, which stay in the database for a rolled-back release."""
+    BEFORE = [('jobs', '0008_convert_printer_presets')]
+    AFTER = [('jobs', '0009_slicer_templates')]
+
+    def migrate(self, target):
+        executor = MigrationExecutor(connection)
+        executor.migrate(target)
+        return MigrationExecutor(connection).loader.project_state(target).apps
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_old_columns_are_kept_and_new_rows_still_save(self):
+        apps = self.migrate(self.BEFORE)
+        apps.get_model('jobs', 'PrinterModel').objects.create(
+            name='Old', settings_path='/orca/m.json;/orca/p.json',
+        )
+        apps.get_model('jobs', 'Filament').objects.create(
+            filament_type='PLA', color='Black', preset_path='/orca/pla.json',
+        )
+
+        self.migrate(self.AFTER)
+        # The current models know nothing of the old columns...
+        model = PrinterModel.objects.create(name='New')
+        self.assertEqual(PrinterModel.objects.get(name='Old').template_path, '')
+        Filament.objects.create(filament_type='PETG', color='White')
+        Printer.objects.create(name='X1C', bambuddy_printer_id=1, printer_model=model)
+        self.assertEqual(Printer.objects.get().template_path, '')
+        # ...but the columns and their old values are still there for a
+        # release rolled back to before this migration, and new rows get ''.
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT name, settings_path FROM jobs_printermodel ORDER BY name')
+            self.assertEqual(
+                cursor.fetchall(), [('New', ''), ('Old', '/orca/m.json;/orca/p.json')],
+            )
+            cursor.execute('SELECT color, preset_path FROM jobs_filament ORDER BY color')
+            self.assertEqual(cursor.fetchall(), [('Black', '/orca/pla.json'), ('White', '')])
+
+        apps = self.migrate(self.BEFORE)
+        self.assertEqual(
+            apps.get_model('jobs', 'PrinterModel').objects.get(name='Old').settings_path,
+            '/orca/m.json;/orca/p.json',
+        )
+
+
+@skipIf(
+    connection.vendor == 'sqlite',
+    'SQLite rebuilds a table whenever a migration adds a column, which drops the '
+    'old preset columns this test needs; CI runs it on Postgres.',
+)
 class PresetMigrationTests(TransactionTestCase):
     """0008 turns each printer's old preset path columns into PrinterModel and
     Filament rows, and can be reversed."""
@@ -476,13 +537,9 @@ class PresetMigrationTests(TransactionTestCase):
             [(1, '/orca/pla.json', 'pla'), (2, '/orca/petg.json', 'petg')],
         )
         self.assertEqual(apps.get_model('jobs', 'Filament').objects.count(), 2)
-        # The current code slices with exactly what the old columns said.
-        printer = Printer.objects.get(name='X1C-1')
-        self.assertEqual(printer.printer_model.settings_path, '/orca/x1c-m.json;/orca/x1c-p.json')
-        self.assertEqual(printer.filament_preset_paths(), '/orca/pla.json;/orca/petg.json')
         # The old columns are still in the database for a rolled-back release,
         # and new printers get a valid value in them.
-        Printer.objects.create(name='New', bambuddy_printer_id=9)
+        NewPrinter.objects.create(name='New', bambuddy_printer_id=9)
         with connection.cursor() as cursor:
             cursor.execute('SELECT slicer_settings FROM jobs_printer ORDER BY name')
             self.assertEqual(

@@ -21,15 +21,17 @@ job_gcode_upload_path = job_sliced_file_upload_path
 
 class PrinterModel(models.Model):
     """A kind of printer (e.g. "Bambu Lab X1 Carbon, 0.4 nozzle") and the
-    OrcaSlicer presets that slice for it. Every Printer of that kind points
-    here, so the preset paths are entered once. Managed in /admin/."""
+    OrcaSlicer template that slices for it. Every Printer of that kind points
+    here, so the template path is entered once. Managed in /admin/."""
     name = models.CharField(max_length=100, unique=True)
-    settings_path = models.CharField(
+    template_path = models.CharField(
         max_length=1000,
+        blank=True,
         help_text=(
-            'Path on the site Pi of the OrcaSlicer machine preset .json, then the '
-            'process preset .json, separated by a semicolon (OrcaSlicer '
-            '--load-settings).'
+            'Path on the site Pi of the OrcaSlicer .3mf project used as the '
+            'template for this kind of printer (it holds the machine, process '
+            'and filament settings). Blank = ORCA_SLICER_TEMPLATE from .env. '
+            'A single printer can use its own template instead.'
         ),
     )
 
@@ -41,16 +43,13 @@ class PrinterModel(models.Model):
 
 
 class Filament(models.Model):
-    """A filament teachers can load, and the OrcaSlicer filament preset that
-    slices for it. Managed in /admin/."""
+    """A filament teachers can say is loaded in a printer. It is for display
+    and choosing; the slicer template decides the filament settings.
+    Managed in /admin/."""
     filament_type = models.CharField(
         'type', max_length=50, help_text='The material, e.g. PLA, PETG, TPU.',
     )
     color = models.CharField(max_length=50, help_text='e.g. Black, Jade White.')
-    preset_path = models.CharField(
-        max_length=500,
-        help_text='Path on the site Pi of the OrcaSlicer filament preset .json.',
-    )
 
     class Meta:
         ordering = ['filament_type', 'color']
@@ -69,8 +68,8 @@ class Printer(models.Model):
 
     Its IP address and access code live in Bambuddy, not here; this row links
     JohnCad's name for the printer to Bambuddy's printer id, and says what the
-    slicer needs to know: which PrinterModel it is and which Filament is loaded
-    in each slot. Teachers add printers on /printers/ (an AddPrinterTicket,
+    slicer needs to know: which PrinterModel it is (and so which template) and
+    which Filament is loaded in each slot. Teachers add printers on /printers/ (an AddPrinterTicket,
     carried out by the print agent).
     """
     MAX_FILAMENT_SLOTS = 4
@@ -81,14 +80,23 @@ class Printer(models.Model):
     )
     serial_number = models.CharField(max_length=32, blank=True)
     # Null only for printers from before PrinterModel existed; those slice with
-    # the ORCA_SLICER_* settings from .env.
+    # ORCA_SLICER_TEMPLATE from .env (unless they have their own template).
     printer_model = models.ForeignKey(
         PrinterModel,
         on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name='printers',
-        help_text='Decides the slicer presets. Blank = use ORCA_SLICER_SETTINGS.',
+        help_text='Decides the slicer template, unless this printer has its own.',
+    )
+    template_path = models.CharField(
+        max_length=1000,
+        blank=True,
+        help_text=(
+            'Path on the site Pi of an OrcaSlicer .3mf template for this '
+            "printer only. Blank = its printer model's template, or "
+            'ORCA_SLICER_TEMPLATE from .env.'
+        ),
     )
     filaments = models.ManyToManyField(
         Filament, through='PrinterFilament', related_name='printers', blank=True,
@@ -103,14 +111,6 @@ class Printer(models.Model):
 
     def __str__(self):
         return self.name
-
-    def filament_preset_paths(self):
-        """The loaded filaments' preset paths in slot order, ';'-joined for
-        OrcaSlicer's --load-filaments ('' if no filament is set)."""
-        return ';'.join(
-            slot.filament.preset_path
-            for slot in self.filament_slots.select_related('filament')
-        )
 
 
 class PrinterFilament(models.Model):

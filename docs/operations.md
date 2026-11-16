@@ -190,7 +190,7 @@ New random value: `python3 -c "import secrets; print(secrets.token_urlsafe(50))"
 | Site doesn't load | `systemctl status johncad`, then `journalctl -u johncad -n 50`. If it says `SECRET_KEY is not set`, `.env` is missing or incomplete. If only the domain fails, `systemctl status caddy` and the router's port forwarding. |
 | "Bad Request (400)" | The address you typed isn't in `ALLOWED_HOSTS` in `.env`. |
 | Login or upload fails with "CSRF" | `CSRF_TRUSTED_ORIGINS` in `.env` must list `https://<your-domain>`. |
-| Jobs stay at "Waiting to slice" | `journalctl -u johncad-slicer -n 50`; README "Slicer presets". |
+| Jobs stay at "Waiting to slice" | `journalctl -u johncad-slicer -n 50`; the reason is also on `/review/`. "Slicer template not found" means the path in `/admin/` or `ORCA_SLICER_TEMPLATE` is wrong, or the OrcaSlicer Flatpak can't read that folder (README "Slicer template"). |
 | Sliced jobs never reach the printer | `/queue/` shows when the agent last checked in. If it is old, `systemctl status johncad-agent` on the printer Pi, then the troubleshooting table in [agent/README.md](../agent/README.md). |
 | Database errors | `docker compose ps` (is `db` up?), `docker compose logs db`. |
 | Disk full | `df -h`; old backups and `private_media.before-restore-*` folders are the usual cause. |

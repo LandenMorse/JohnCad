@@ -39,7 +39,7 @@ needs no inbound access, tunnel or VPN.
    scripts/setup-site.sh
    ```
    It installs everything, starts the site and sets up nightly backups.
-2. **A web address and slicer presets** on the site Pi: follow
+2. **A web address and the slicer template** on the site Pi: follow
    [Site Pi setup](#site-pi-setup-production), steps 2 and 3.
 3. **Printer Pi:** follow [agent/README.md](agent/README.md), then add your
    printers in `/admin/`.
@@ -113,8 +113,7 @@ commented list):
 | `POSTGRES_HOST` | `localhost` for host-venv dev; `docker compose up` overrides this to `db` automatically for the containerized web service |
 | `POSTGRES_PORT` | Default `5432`                                                                                                            |
 | `ORCA_SLICER_CMD` | Command to launch OrcaSlicer, default `flatpak run com.orcaslicer.OrcaSlicer`                                             |
-| `ORCA_SLICER_SETTINGS` | Semicolon-separated machine + process preset `.json` files (`--load-settings`); required — blank = slicer not configured  |
-| `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `jm.json` file(s) (`--load-filaments`), optional                                      |
+| `ORCA_SLICER_TEMPLATE` | The template `.3mf` jobs are sliced into, default `~/Documents/Perfect_Circle.3mf` (`~` and `$HOME` are expanded). A printer's or printer model's own template in `/admin/` overrides it |
 | `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir`                                                                                           |
 | `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300`                                                                                 |
 | `HTTPS_ENABLED` | `True` once the site is served over HTTPS (marks cookies Secure) |
@@ -212,33 +211,40 @@ same line as a value in `.env`: systemd doesn't strip them. Uploads up to
 512 MB are allowed (`max_size` in the Caddyfile, `DATA_UPLOAD_MAX_MEMORY_SIZE`
 in `cms/settings.py`).
 
-**3. Slicer presets.** Put the Bambu machine/process/filament preset `.json`
-files somewhere on the Pi (e.g. `/home/<user>/orca/`) and let the OrcaSlicer
-sandbox read them (the setup script already did this for `private_media/`):
+**3. Slicer template.** Every job is sliced into a template `.3mf`: an
+OrcaSlicer project saved with the printer, process and filament you want (for
+example a single plate with a small test part). JohnCad adds the uploaded
+`.stl` to it, arranges it and exports a `.gcode.3mf`. Put the template
+somewhere on the Pi, e.g. `~/Documents/Perfect_Circle.3mf` (the default), and
+let the OrcaSlicer sandbox read that folder (the setup script already did this
+for `private_media/`):
 
 ```bash
-flatpak override --user --filesystem=/home/<user>/orca:ro com.orcaslicer.OrcaSlicer
+flatpak override --user --filesystem=$HOME/Documents:ro com.orcaslicer.OrcaSlicer
 ```
 
-Enter the paths on each Printer in `/admin/` (see the printer Pi section), or
-for a single-printer setup in `.env`:
+The default template is `ORCA_SLICER_TEMPLATE` in `.env`. To use a different
+template for one kind of printer, set **Template path** on its **Printer
+model** in `/admin/`; to use one for a single printer, set it on the
+**Printer**. The printer's own template wins, then its model's, then
+`ORCA_SLICER_TEMPLATE`. After editing `.env`, run
+`sudo systemctl restart johncad johncad-slicer`; changes in `/admin/` apply to
+the next job.
 
-```
-ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
-ORCA_SLICER_FILAMENTS=/home/<user>/orca/filament.json
-```
-
-After editing `.env`, run `sudo systemctl restart johncad johncad-slicer`.
-
-Smoke-test slicing before relying on it:
+Smoke-test slicing before relying on it. This is the command JohnCad runs:
 
 ```bash
 mkdir -p private_media/slicing_tmp
-flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir $PWD/private_media/slicing_tmp   --load-settings "/home/<user>/orca/machine.json;/home/<user>/orca/process.json" some_model.stl
+flatpak run com.orcaslicer.OrcaSlicer \
+  --arrange 1 \
+  --slice 0 \
+  --export-3mf "$PWD/private_media/slicing_tmp/output.gcode.3mf" \
+  "$HOME/Documents/Perfect_Circle.3mf" \
+  some_model.stl
 ```
 
-It should write a `.gcode` file. Add `--export-3mf out.gcode.3mf` to check
-the `.gcode.3mf` that JohnCad actually sends to Bambuddy. If it fails for lack of a display, try
+It should write `output.gcode.3mf`, the file JohnCad sends to Bambuddy. If it
+fails for lack of a display, try
 `ORCA_SLICER_CMD=xvfb-run -a flatpak run com.orcaslicer.OrcaSlicer` in `.env`
 (`sudo apt install xvfb`).
 
@@ -300,9 +306,9 @@ Docker and the print agent as a service. The full steps are in
    create a Bambuddy API key, put both keys and the site's address in
    `/etc/johncad-agent.env`, and install the `johncad-agent` service.
 3. **Site Pi, `/admin/`** (once per kind of printer and filament): add a
-   **Printer model** (a name, and the OrcaSlicer machine + process preset
-   `.json` paths) and the **Filaments** you stock (type, color, and the
-   filament preset `.json` path).
+   **Printer model** (a name, and optionally its slicer **Template path**; blank
+   uses `ORCA_SLICER_TEMPLATE`) and the **Filaments** you stock (type and
+   color).
 4. **Teachers add the printers** on the **Printers** page (`/printers/`):
    name, model, IP address, access code and serial number. The print agent
    adds the printer to Bambuddy and the page shows when it is connected and
@@ -316,20 +322,18 @@ Bambuddy API: [docs/bambuddy.md](docs/bambuddy.md).
 ### OrcaSlicer
 
 Slicing (`jobs/slicing.py`) shells out to the OrcaSlicer CLI, installed as a
-Flatpak on the Pi and run on the host alongside Django (not in Docker). Point
-`ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` at the installed Bambu
-machine/process/filament preset `.json` files.
+Flatpak on the Pi and run on the host alongside Django (not in Docker). It
+slices into a template `.3mf` that holds the machine, process and filament
+settings: see "Slicer template" under [Site Pi setup](#site-pi-setup-production)
+for how to choose one globally, per printer model or per printer.
 
-The Flatpak sandbox must be able to read the STL and preset files and write
+The Flatpak sandbox must be able to read the STL and the template and write
 its output. Scratch output goes under `MEDIA_ROOT/slicing_tmp`, so grant:
 
 ```bash
 flatpak override --user --filesystem=/path/to/JohnCad/private_media com.orcaslicer.OrcaSlicer
-flatpak override --user --filesystem=/path/to/preset/dir:ro com.orcaslicer.OrcaSlicer
+flatpak override --user --filesystem=/path/to/template/dir:ro com.orcaslicer.OrcaSlicer
 ```
-
-Smoke-test headless on the Pi before relying on it:
-`flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir /out --load-settings "machine.json;process.json" in.stl`.
 
 ## Helper commands
 
@@ -457,15 +461,15 @@ same file more than once).
 
 | Model | Fields | Notes |
 |---|---|---|
-| `PrinterModel` | `name`, `settings_path` | A kind of printer and its OrcaSlicer machine + process preset paths (`;`-separated). Added in `/admin/` |
-| `Filament` | `filament_type`, `color`, `preset_path` | A filament and its OrcaSlicer filament preset. Type + color is unique. Added in `/admin/` |
-| `Printer` | `name`, `bambuddy_printer_id`, `serial_number`, `printer_model` (FK), `is_active` | Created by a successful add-printer ticket. Its IP address and access code are kept by Bambuddy, not here |
-| `PrinterFilament` | `printer` (FK), `filament` (FK), `slot` (1-4) | Which filament is loaded in each slot; one row per used slot. Slot order is the order the slicer gets the presets in |
+| `PrinterModel` | `name`, `template_path` | A kind of printer and the slicer template `.3mf` for it (blank = `ORCA_SLICER_TEMPLATE`). Added in `/admin/` |
+| `Filament` | `filament_type`, `color` | A filament teachers can say is loaded. Type + color is unique. Added in `/admin/` |
+| `Printer` | `name`, `bambuddy_printer_id`, `serial_number`, `printer_model` (FK), `template_path`, `is_active` | Created by a successful add-printer ticket. Its IP address and access code are kept by Bambuddy, not here |
+| `PrinterFilament` | `printer` (FK), `filament` (FK), `slot` (1-4) | Which filament is loaded in each slot; one row per used slot. Informational: the slicer template decides the filament settings |
 | `AddPrinterTicket` | `name`, `ip_address`, `access_code`, `serial_number`, `printer_model` (FK), `status`, `error`, `bambuddy_printer_id`, `printer`, `requested_by`, `agent`, timestamps | A teacher's request to add a printer. Status: `pending -> adding -> succeeded`/`failed`, or `cancelled` |
 
-A job slices with its printer's `PrinterModel` presets and slot filaments. A
-printer with no model (from before models existed) uses `ORCA_SLICER_SETTINGS`
-and `ORCA_SLICER_FILAMENTS` from `.env`.
+A job slices into its printer's own `template_path` if it has one, otherwise
+its `PrinterModel`'s, otherwise `ORCA_SLICER_TEMPLATE` from `.env` (also used
+for jobs with no printer and printers with no model).
 
 ### `Job`
 
@@ -583,10 +587,12 @@ a failing job isn't retried in a loop until a teacher clicks Retry. Claims left
 by a crashed worker are released after `ORCA_SLICER_TIMEOUT` + 60s.
 
 `slice_to_3mf(job)` invokes OrcaSlicer as a subprocess
-(`<ORCA_SLICER_CMD> --slice 0 --outputdir <tmp> --load-settings <settings>
-[--load-filaments <filaments>] [--datadir <dir>] <stl>`), picks up the
-generated `.gcode.3mf` (`--export-3mf`) into `job.sliced_file`, and advances
-the job to `queued`. No shell interpolation (`shell=True`) is used. Configurable via
+(`<ORCA_SLICER_CMD> --arrange 1 --slice 0 --export-3mf <tmp>/output.gcode.3mf
+[--datadir <dir>] <template.3mf> <stl>`), so the `.stl` is added to the
+template, arranged, sliced with the template's settings, and the generated
+`.gcode.3mf` is saved into `job.sliced_file`. The job then advances to
+`queued`. A missing template stops the job in `approved` with the path in
+`slicing_error`. No shell interpolation (`shell=True`) is used. Configurable via
 the `ORCA_SLICER_*` env vars above.
 
 ### Printers page (`/printers/`, teachers only)

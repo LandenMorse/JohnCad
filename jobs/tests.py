@@ -1,4 +1,7 @@
 import json
+import os
+import shutil
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -32,6 +35,19 @@ User = get_user_model()
 
 
 class ReviewTestBase(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # A real (empty) template file for slice_to_3mf, which checks it exists.
+        template_dir = tempfile.mkdtemp(prefix='johncad-template-')
+        cls.addClassCleanup(shutil.rmtree, template_dir, True)
+        cls.template_file = os.path.join(template_dir, 'template.3mf')
+        with open(cls.template_file, 'wb') as f:
+            f.write(b'template')
+        template_override = override_settings(ORCA_SLICER_TEMPLATE=cls.template_file)
+        template_override.enable()
+        cls.addClassCleanup(template_override.disable)
+
     @classmethod
     def setUpTestData(cls):
         cls.student = User.objects.create_user('student', password='pw')
@@ -692,23 +708,42 @@ class DispatchButtonTests(DispatchTestBase):
 
 
 class SlicingOutputTests(ReviewTestBase):
-    @override_settings(ORCA_SLICER_SETTINGS='m.json;p.json', ORCA_SLICER_CMD='orca')
+    @override_settings(ORCA_SLICER_CMD='orca')
     def test_exports_3mf_and_queues(self):
         job = self.make_job(status=Job.Status.APPROVED)
-
-        def fake_run(command, **kwargs):
-            self.assertIn('--export-3mf', command)
-            outdir = Path(command[command.index('--outputdir') + 1])
-            (outdir / command[command.index('--export-3mf') + 1]).write_bytes(b'3mf')
-            return mock.Mock(returncode=0, stdout='', stderr='')
-
-        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_run):
+        commands = []
+        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
             slice_to_3mf(job)
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.QUEUED)
         self.assertTrue(job.sliced_file.name.endswith('.gcode.3mf'))
 
-    @override_settings(ORCA_SLICER_SETTINGS='m.json;p.json', ORCA_SLICER_CMD='orca')
+    @override_settings(ORCA_SLICER_CMD='orca')
+    def test_command_is_the_template_command(self):
+        job = self.make_job(status=Job.Status.APPROVED)
+        commands = []
+        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
+            slice_to_3mf(job)
+        command = commands[0]
+        export = command[command.index('--export-3mf') + 1]
+        self.assertEqual(command[:6], ['orca', '--arrange', '1', '--slice', '0', '--export-3mf'])
+        self.assertTrue(os.path.isabs(export) and export.endswith('.gcode.3mf'))
+        # The template comes right before the .stl, which is last.
+        self.assertEqual(command[-2:], [self.template_file, job.attachment.file.path])
+        # Presets are no longer loaded one by one: the template holds them.
+        self.assertNotIn('--load-settings', command)
+        self.assertNotIn('--load-filaments', command)
+
+    @override_settings(ORCA_SLICER_CMD='orca', ORCA_SLICER_DATADIR='/orca/data')
+    def test_datadir_goes_before_the_template(self):
+        commands = []
+        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
+            slice_to_3mf(self.make_job(status=Job.Status.APPROVED))
+        command = commands[0]
+        self.assertEqual(command[command.index('--datadir') + 1], '/orca/data')
+        self.assertLess(command.index('--datadir'), command.index(self.template_file))
+
+    @override_settings(ORCA_SLICER_CMD='orca')
     def test_no_3mf_output_fails(self):
         job = self.make_job(status=Job.Status.APPROVED)
         result = mock.Mock(returncode=0, stdout='', stderr='')
@@ -721,8 +756,7 @@ def fake_orca(outputs):
     """subprocess.run stand-in that records the command and writes a .3mf."""
     def run(command, **kwargs):
         outputs.append(command)
-        outdir = Path(command[command.index('--outputdir') + 1])
-        (outdir / command[command.index('--export-3mf') + 1]).write_bytes(b'3mf')
+        Path(command[command.index('--export-3mf') + 1]).write_bytes(b'3mf')
         return mock.Mock(returncode=0, stdout='', stderr='')
     return run
 
@@ -821,24 +855,47 @@ class PrinterSlicingTests(ReviewTestBase):
             slice_to_3mf(job)
         return commands[0]
 
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json', ORCA_SLICER_FILAMENTS='env-f.json')
-    def test_printer_without_presets_falls_back_to_env_pair(self):
+    def test_printer_without_template_uses_the_env_default(self):
         printer = Printer.objects.create(name='A1', bambuddy_printer_id=3)
         command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[command.index('--load-settings') + 1], 'env-m.json;env-p.json')
-        self.assertEqual(command[command.index('--load-filaments') + 1], 'env-f.json')
+        self.assertEqual(command[-2], self.template_file)
 
-    @override_settings(ORCA_SLICER_SETTINGS='')
-    def test_no_presets_anywhere_names_the_printer(self):
-        printer = Printer.objects.create(name='A1', bambuddy_printer_id=3)
-        job = self.make_job(status=Job.Status.APPROVED, printer=printer)
-        with self.assertRaisesMessage(SlicerNotConfigured, 'printer "A1"'):
-            slice_to_3mf(job)
+    def test_printers_own_template_wins(self):
+        own = os.path.join(os.path.dirname(self.template_file), 'own.3mf')
+        with open(own, 'wb') as f:
+            f.write(b'own')
+        printer = Printer.objects.create(name='A1', bambuddy_printer_id=3, template_path=own)
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
+        self.assertEqual(command[-2], own)
 
-    @override_settings(ORCA_SLICER_SETTINGS='env-m.json;env-p.json')
     def test_job_without_printer_uses_env(self):
         command = self.slice(self.make_job(status=Job.Status.APPROVED))
-        self.assertEqual(command[command.index('--load-settings') + 1], 'env-m.json;env-p.json')
+        self.assertEqual(command[-2], self.template_file)
+
+    def test_home_is_expanded_in_template_paths(self):
+        home = os.path.dirname(self.template_file)
+        printer = Printer.objects.create(
+            name='A1', bambuddy_printer_id=3, template_path='$HOME/template.3mf',
+        )
+        with mock.patch.dict(os.environ, {'HOME': home, 'USERPROFILE': home}):
+            command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
+        self.assertEqual(os.path.normpath(command[-2]), os.path.join(home, 'template.3mf'))
+
+    @override_settings(ORCA_SLICER_TEMPLATE='')
+    def test_no_template_anywhere_is_not_configured(self):
+        job = self.make_job(status=Job.Status.APPROVED)
+        with self.assertRaisesMessage(SlicerNotConfigured, 'No slicer template'):
+            slice_to_3mf(job)
+
+    def test_missing_template_file_names_the_printer_and_path(self):
+        printer = Printer.objects.create(
+            name='A1', bambuddy_printer_id=3, template_path='/nowhere/missing.3mf',
+        )
+        job = self.make_job(status=Job.Status.APPROVED, printer=printer)
+        with mock.patch('jobs.slicing.subprocess.run') as run:
+            with self.assertRaisesMessage(SlicerNotConfigured, '/nowhere/missing.3mf'):
+                slice_to_3mf(job)
+        run.assert_not_called()
 
 
 class PrinterDispatchTests(DispatchTestBase):

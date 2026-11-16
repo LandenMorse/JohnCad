@@ -215,13 +215,13 @@ MEDIA_ROOT = BASE_DIR / 'private_media'
 
 # Command used to launch OrcaSlicer, split shell-style (never run via a shell).
 # The Pi runs it as a Flatpak; that sandbox must be allowed to read MEDIA_ROOT
-# and the settings files (see README "OrcaSlicer").
+# and the template .3mf (see README "OrcaSlicer").
 ORCA_SLICER_CMD = os.environ.get('ORCA_SLICER_CMD', 'flatpak run com.orcaslicer.OrcaSlicer')
-# Semicolon-separated machine + process preset .json files (--load-settings).
-# Blank means slicing is treated as not configured.
-ORCA_SLICER_SETTINGS = os.environ.get('ORCA_SLICER_SETTINGS', '')
-# Semicolon-separated filament preset .json file(s) (--load-filaments). Optional.
-ORCA_SLICER_FILAMENTS = os.environ.get('ORCA_SLICER_FILAMENTS', '')
+# The template .3mf project every job is sliced into (its machine, process and
+# filament settings apply; the uploaded .stl is added to it and arranged). A
+# printer's own template, or its printer model's, in /admin/ overrides this.
+# ~ and $HOME are expanded.
+ORCA_SLICER_TEMPLATE = os.environ.get('ORCA_SLICER_TEMPLATE', '~/Documents/Perfect_Circle.3mf')
 # Optional OrcaSlicer --datadir (profile/settings directory).
 ORCA_SLICER_DATADIR = os.environ.get('ORCA_SLICER_DATADIR', '')
 ORCA_SLICER_TIMEOUT = int(os.environ.get('ORCA_SLICER_TIMEOUT', '300'))
