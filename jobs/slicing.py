@@ -22,17 +22,49 @@ class SlicingFailed(Exception):
 OUTPUT_NAME = 'output.gcode.3mf'
 
 
+def _require_readable(path, what):
+    if not Path(path).is_file():
+        raise SlicerNotConfigured(
+            f'{what} is missing on the server ({path}). Upload it again in /admin/.'
+        )
+
+
 def _presets_for(job):
     """(machine+process presets, filament presets) to slice `job` with.
 
-    A printer with a PrinterModel uses that model's presets and the filaments
-    loaded in the printer's slots, in slot order. One without (or a job with
-    no printer) falls back to the ORCA_SLICER_* settings as a pair, so a
-    printer's machine preset is never mixed with another printer's filaments.
+    A printer with a PrinterModel uses that model's uploaded machine and
+    process .json files (or, for models set up before uploads existed, its
+    legacy settings path) and the filaments loaded in the printer's slots, in
+    slot order, each an uploaded .json (or legacy path). One without a model
+    (or a job with no printer) falls back to the ORCA_SLICER_* settings as a
+    pair, so a printer's machine preset is never mixed with another printer's
+    filaments.
     """
     printer = job.printer
     if printer is not None and printer.printer_model_id:
-        return printer.printer_model.settings_path, printer.filament_preset_paths()
+        model = printer.printer_model
+        presets = model.settings_arg()
+        if not presets:
+            raise SlicerNotConfigured(
+                f'Printer model "{model.name}" has no machine and process presets: '
+                'upload them in /admin/.'
+            )
+        if model.uses_uploaded_files:
+            _require_readable(model.machine_file.path, f'The machine preset of "{model.name}"')
+            _require_readable(model.process_file.path, f'The process preset of "{model.name}"')
+        filaments = []
+        for slot in printer.filament_slots.select_related('filament'):
+            filament = slot.filament
+            location = filament.preset_location()
+            if not location:
+                raise SlicerNotConfigured(
+                    f'Filament "{filament}" (slot {slot.slot} of "{printer.name}") has no '
+                    'preset: upload one in /admin/.'
+                )
+            if filament.preset_file:
+                _require_readable(location, f'The preset of filament "{filament}"')
+            filaments.append(location)
+        return presets, ';'.join(filaments)
     if not settings.ORCA_SLICER_SETTINGS:
         if printer is not None:
             raise SlicerNotConfigured(

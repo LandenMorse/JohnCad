@@ -50,15 +50,46 @@ class JobAdmin(admin.ModelAdmin):
 
 @admin.register(PrinterModel)
 class PrinterModelAdmin(admin.ModelAdmin):
-    list_display = ('name', 'settings_path')
+    list_display = ('name', 'machine_file', 'process_file', 'uses_uploaded_files')
     search_fields = ('name',)
+    fieldsets = (
+        (None, {'fields': ('name',)}),
+        ('Slicer presets', {
+            'description': (
+                'Upload the OrcaSlicer machine and process presets for this kind '
+                'of printer as .json files (OrcaSlicer: export the preset). Jobs '
+                'for printers of this model are sliced with them.'
+            ),
+            'fields': ('machine_file', 'process_file'),
+        }),
+        ('Legacy', {'classes': ('collapse',), 'fields': ('settings_path',)}),
+    )
+
+    @admin.display(boolean=True, description='Uploaded')
+    def uses_uploaded_files(self, obj):
+        return obj.uses_uploaded_files
 
 
 @admin.register(Filament)
 class FilamentAdmin(admin.ModelAdmin):
-    list_display = ('filament_type', 'color', 'preset_path')
+    list_display = ('filament_type', 'color', 'preset_file', 'has_uploaded_preset')
     list_filter = ('filament_type',)
     search_fields = ('filament_type', 'color')
+    fieldsets = (
+        (None, {'fields': ('filament_type', 'color')}),
+        ('Slicer preset', {
+            'description': (
+                'Upload the OrcaSlicer filament preset for this filament as a '
+                '.json file (OrcaSlicer: export the preset).'
+            ),
+            'fields': ('preset_file',),
+        }),
+        ('Legacy', {'classes': ('collapse',), 'fields': ('preset_path',)}),
+    )
+
+    @admin.display(boolean=True, description='Uploaded')
+    def has_uploaded_preset(self, obj):
+        return bool(obj.preset_file)
 
 
 class PrinterFilamentInline(admin.TabularInline):

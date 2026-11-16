@@ -39,7 +39,7 @@ needs no inbound access, tunnel or VPN.
    scripts/setup-site.sh
    ```
    It installs everything, starts the site and sets up nightly backups.
-2. **A web address and slicer presets** on the site Pi: follow
+2. **A web address and the slicer presets** on the site Pi: follow
    [Site Pi setup](#site-pi-setup-production), steps 2 and 3.
 3. **Printer Pi:** follow [agent/README.md](agent/README.md), then add your
    printers in `/admin/`.
@@ -212,23 +212,24 @@ same line as a value in `.env`: systemd doesn't strip them. Uploads up to
 512 MB are allowed (`max_size` in the Caddyfile, `DATA_UPLOAD_MAX_MEMORY_SIZE`
 in `cms/settings.py`).
 
-**3. Slicer presets.** Put the Bambu machine/process/filament preset `.json`
-files somewhere on the Pi (e.g. `/home/<user>/orca/`) and let the OrcaSlicer
-sandbox read them (the setup script already did this for `private_media/`):
+**3. Slicer presets.** Export the OrcaSlicer machine, process and filament
+presets you use as `.json` files (OrcaSlicer: select the preset and export it)
+and upload them in `/admin/` (superuser): a **Printer model** takes a machine
+and a process file, a **Filament** takes a filament file. They are stored in
+`private_media/presets/`, which the OrcaSlicer sandbox can already read (the
+setup script granted it) and which the nightly backup includes. Nothing needs
+to be copied onto the Pi by hand, and changes apply to the next job.
 
-```bash
-flatpak override --user --filesystem=/home/<user>/orca:ro com.orcaslicer.OrcaSlicer
-```
+Files are checked when uploaded: they must be JSON, and a preset that says
+what it is (`"type": "machine"`, `"process"` or `"filament"`, as OrcaSlicer
+writes it) must be the kind you uploaded it as. Replacing a file in the admin
+uploads a new copy; the old one stays on disk.
 
-Enter the paths on each Printer in `/admin/` (see the printer Pi section), or
-for a single-printer setup in `.env`:
-
-```
-ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
-ORCA_SLICER_FILAMENTS=/home/<user>/orca/filament.json
-```
-
-After editing `.env`, run `sudo systemctl restart johncad johncad-slicer`.
+Printer models and filaments set up before uploads existed keep slicing with
+their old path fields (under "Legacy" in the admin) until you upload files for
+them; uploaded files always win. For a single printer with no printer model,
+`ORCA_SLICER_SETTINGS` and `ORCA_SLICER_FILAMENTS` in `.env` still work, and
+need `sudo systemctl restart johncad johncad-slicer` after editing.
 
 Smoke-test slicing before relying on it:
 
@@ -300,9 +301,9 @@ Docker and the print agent as a service. The full steps are in
    create a Bambuddy API key, put both keys and the site's address in
    `/etc/johncad-agent.env`, and install the `johncad-agent` service.
 3. **Site Pi, `/admin/`** (once per kind of printer and filament): add a
-   **Printer model** (a name, and the OrcaSlicer machine + process preset
-   `.json` paths) and the **Filaments** you stock (type, color, and the
-   filament preset `.json` path).
+   **Printer model** (a name, and the OrcaSlicer machine and process preset
+   `.json` files, uploaded) and the **Filaments** you stock (type, color, and
+   the filament preset `.json` file, uploaded).
 4. **Teachers add the printers** on the **Printers** page (`/printers/`):
    name, model, IP address, access code and serial number. The print agent
    adds the printer to Bambuddy and the page shows when it is connected and
@@ -316,17 +317,21 @@ Bambuddy API: [docs/bambuddy.md](docs/bambuddy.md).
 ### OrcaSlicer
 
 Slicing (`jobs/slicing.py`) shells out to the OrcaSlicer CLI, installed as a
-Flatpak on the Pi and run on the host alongside Django (not in Docker). Point
-`ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` at the installed Bambu
-machine/process/filament preset `.json` files.
+Flatpak on the Pi and run on the host alongside Django (not in Docker). The
+machine, process and filament presets are the `.json` files uploaded in
+`/admin/` (see "Slicer presets" under [Site Pi setup](#site-pi-setup-production)).
 
-The Flatpak sandbox must be able to read the STL and preset files and write
-its output. Scratch output goes under `MEDIA_ROOT/slicing_tmp`, so grant:
+The Flatpak sandbox must be able to read the STL and the uploaded presets and
+write its output. All of these live under `MEDIA_ROOT`, so one grant covers
+them (`setup-site.sh` does it):
 
 ```bash
 flatpak override --user --filesystem=/path/to/JohnCad/private_media com.orcaslicer.OrcaSlicer
-flatpak override --user --filesystem=/path/to/preset/dir:ro com.orcaslicer.OrcaSlicer
 ```
+
+Only if you use the legacy path fields or `ORCA_SLICER_SETTINGS` do you also
+need to grant the folder those files are in:
+`flatpak override --user --filesystem=/path/to/preset/dir:ro com.orcaslicer.OrcaSlicer`.
 
 Smoke-test headless on the Pi before relying on it:
 `flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir /out --load-settings "machine.json;process.json" in.stl`.
@@ -457,14 +462,16 @@ same file more than once).
 
 | Model | Fields | Notes |
 |---|---|---|
-| `PrinterModel` | `name`, `settings_path` | A kind of printer and its OrcaSlicer machine + process preset paths (`;`-separated). Added in `/admin/` |
-| `Filament` | `filament_type`, `color`, `preset_path` | A filament and its OrcaSlicer filament preset. Type + color is unique. Added in `/admin/` |
+| `PrinterModel` | `name`, `machine_file`, `process_file` (uploaded `.json`), legacy `settings_path` | A kind of printer and its OrcaSlicer machine and process presets. Both files or neither. Added in `/admin/` |
+| `Filament` | `filament_type`, `color`, `preset_file` (uploaded `.json`), legacy `preset_path` | A filament and its OrcaSlicer filament preset. Type + color is unique. Added in `/admin/` |
 | `Printer` | `name`, `bambuddy_printer_id`, `serial_number`, `printer_model` (FK), `is_active` | Created by a successful add-printer ticket. Its IP address and access code are kept by Bambuddy, not here |
 | `PrinterFilament` | `printer` (FK), `filament` (FK), `slot` (1-4) | Which filament is loaded in each slot; one row per used slot. Slot order is the order the slicer gets the presets in |
 | `AddPrinterTicket` | `name`, `ip_address`, `access_code`, `serial_number`, `printer_model` (FK), `status`, `error`, `bambuddy_printer_id`, `printer`, `requested_by`, `agent`, timestamps | A teacher's request to add a printer. Status: `pending -> adding -> succeeded`/`failed`, or `cancelled` |
 
-A job slices with its printer's `PrinterModel` presets and slot filaments. A
-printer with no model (from before models existed) uses `ORCA_SLICER_SETTINGS`
+A job slices with its printer's `PrinterModel` machine and process files and
+the filament files of the slots' filaments (an uploaded file wins over a legacy
+path; a missing file stops the job with a message naming it). A printer with no
+model (from before models existed) uses `ORCA_SLICER_SETTINGS`
 and `ORCA_SLICER_FILAMENTS` from `.env`.
 
 ### `Job`

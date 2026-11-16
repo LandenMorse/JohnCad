@@ -476,13 +476,12 @@ class PresetMigrationTests(TransactionTestCase):
             [(1, '/orca/pla.json', 'pla'), (2, '/orca/petg.json', 'petg')],
         )
         self.assertEqual(apps.get_model('jobs', 'Filament').objects.count(), 2)
-        # The current code slices with exactly what the old columns said.
-        printer = Printer.objects.get(name='X1C-1')
+        # The new tables hold exactly what the old columns said.
+        printer = NewPrinter.objects.get(name='X1C-1')
         self.assertEqual(printer.printer_model.settings_path, '/orca/x1c-m.json;/orca/x1c-p.json')
-        self.assertEqual(printer.filament_preset_paths(), '/orca/pla.json;/orca/petg.json')
         # The old columns are still in the database for a rolled-back release,
         # and new printers get a valid value in them.
-        Printer.objects.create(name='New', bambuddy_printer_id=9)
+        NewPrinter.objects.create(name='New', bambuddy_printer_id=9)
         with connection.cursor() as cursor:
             cursor.execute('SELECT slicer_settings FROM jobs_printer ORDER BY name')
             self.assertEqual(

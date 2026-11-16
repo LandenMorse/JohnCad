@@ -57,10 +57,10 @@ only moves finished files.
    leaked key: the admin action **Generate a new key**, or
    `create_agent_key school-pi --rotate`. Unticking **Is active** blocks the
    agent immediately.
-5. In `/admin/`, add a **Printer model** for each kind of printer (a name
-   and the OrcaSlicer machine + process preset `.json` paths, `;`-separated)
-   and a **Filament** for each filament you stock (type, color, filament
-   preset `.json` path).
+5. In `/admin/`, add a **Printer model** for each kind of printer (a name,
+   and the OrcaSlicer machine and process presets uploaded as `.json` files)
+   and a **Filament** for each filament you stock (type, color, and its
+   filament preset uploaded as a `.json` file).
 6. Once the agent is running (next section), teachers add printers on the
    site's **Printers** page (`/printers/`): name, model, IP address, access
    code and serial number. The agent adds the printer to its Bambuddy, waits

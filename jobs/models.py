@@ -1,14 +1,18 @@
 import hashlib
+import json
 import secrets
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import (
+    FileExtensionValidator,
     MaxValueValidator,
     MinValueValidator,
     RegexValidator,
 )
 from django.db import models
 from django.db.models import Q
+from django.utils.deconstruct import deconstructible
 
 
 def job_sliced_file_upload_path(instance, filename):
@@ -19,17 +23,89 @@ def job_sliced_file_upload_path(instance, filename):
 job_gcode_upload_path = job_sliced_file_upload_path
 
 
+PRESET_MAX_BYTES = 5 * 1024 * 1024
+
+
+@deconstructible
+class PresetJSONValidator:
+    """An uploaded OrcaSlicer preset must be a JSON object, and if it says what
+    kind of preset it is (`"type": "machine"`, `"process"` or `"filament"`,
+    as OrcaSlicer writes it) that must be the kind it is uploaded as."""
+
+    def __init__(self, kind):
+        self.kind = kind
+
+    def __eq__(self, other):
+        return isinstance(other, PresetJSONValidator) and other.kind == self.kind
+
+    def __call__(self, value):
+        try:
+            value.seek(0)
+            raw = value.read(PRESET_MAX_BYTES + 1)
+            value.seek(0)
+        except OSError as exc:
+            raise ValidationError('This file could not be read. Upload it again.') from exc
+        if len(raw) > PRESET_MAX_BYTES:
+            raise ValidationError('This file is too big to be an OrcaSlicer preset.')
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise ValidationError('This is not a valid JSON file.') from exc
+        if not isinstance(data, dict):
+            raise ValidationError('This is not an OrcaSlicer preset (expected a JSON object).')
+        declared = data.get('type')
+        if declared is not None and declared != self.kind:
+            raise ValidationError(
+                f'This is a "{declared}" preset, but a "{self.kind}" preset is needed here.'
+            )
+
+
+def _preset_validators(kind):
+    return [FileExtensionValidator(allowed_extensions=['json']), PresetJSONValidator(kind)]
+
+
+def machine_preset_upload_path(instance, filename):
+    return f'presets/machine/{filename}'
+
+
+def process_preset_upload_path(instance, filename):
+    return f'presets/process/{filename}'
+
+
+def filament_preset_upload_path(instance, filename):
+    return f'presets/filament/{filename}'
+
+
 class PrinterModel(models.Model):
     """A kind of printer (e.g. "Bambu Lab X1 Carbon, 0.4 nozzle") and the
-    OrcaSlicer presets that slice for it. Every Printer of that kind points
-    here, so the preset paths are entered once. Managed in /admin/."""
+    OrcaSlicer machine and process presets that slice for it, uploaded as
+    .json files. Every Printer of that kind points here, so they are uploaded
+    once. Managed in /admin/."""
     name = models.CharField(max_length=100, unique=True)
+    machine_file = models.FileField(
+        'machine preset (.json)',
+        upload_to=machine_preset_upload_path,
+        validators=_preset_validators('machine'),
+        blank=True,
+        db_default='',  # so a release rolled back to before uploads can still insert rows
+        help_text='OrcaSlicer machine preset, exported as a .json file.',
+    )
+    process_file = models.FileField(
+        'process preset (.json)',
+        upload_to=process_preset_upload_path,
+        validators=_preset_validators('process'),
+        blank=True,
+        db_default='',  # so a release rolled back to before uploads can still insert rows
+        help_text='OrcaSlicer process preset, exported as a .json file.',
+    )
     settings_path = models.CharField(
+        'legacy settings path',
         max_length=1000,
+        blank=True,
         help_text=(
-            'Path on the site Pi of the OrcaSlicer machine preset .json, then the '
-            'process preset .json, separated by a semicolon (OrcaSlicer '
-            '--load-settings).'
+            'Old way, kept so existing printers keep slicing: path on the site Pi '
+            'of the machine preset .json, then the process preset .json, separated '
+            'by a semicolon. Ignored once both files above are uploaded.'
         ),
     )
 
@@ -39,17 +115,52 @@ class PrinterModel(models.Model):
     def __str__(self):
         return self.name
 
+    def clean(self):
+        if bool(self.machine_file) != bool(self.process_file):
+            raise ValidationError(
+                'Upload both the machine and the process preset, or neither.'
+            )
+        if not self.machine_file and not self.settings_path:
+            raise ValidationError(
+                'Upload a machine preset and a process preset for this printer model.'
+            )
+
+    @property
+    def uses_uploaded_files(self):
+        return bool(self.machine_file and self.process_file)
+
+    def settings_arg(self):
+        """The machine and process presets, ';'-joined for OrcaSlicer's
+        --load-settings: the uploaded files if there are both, else the legacy
+        paths ('' if neither)."""
+        if self.uses_uploaded_files:
+            return ';'.join([self.machine_file.path, self.process_file.path])
+        return self.settings_path
+
 
 class Filament(models.Model):
-    """A filament teachers can load, and the OrcaSlicer filament preset that
-    slices for it. Managed in /admin/."""
+    """A filament teachers can load, and the OrcaSlicer filament preset (an
+    uploaded .json file) that slices for it. Managed in /admin/."""
     filament_type = models.CharField(
         'type', max_length=50, help_text='The material, e.g. PLA, PETG, TPU.',
     )
     color = models.CharField(max_length=50, help_text='e.g. Black, Jade White.')
+    preset_file = models.FileField(
+        'filament preset (.json)',
+        upload_to=filament_preset_upload_path,
+        validators=_preset_validators('filament'),
+        blank=True,
+        db_default='',  # so a release rolled back to before uploads can still insert rows
+        help_text='OrcaSlicer filament preset, exported as a .json file.',
+    )
     preset_path = models.CharField(
+        'legacy preset path',
         max_length=500,
-        help_text='Path on the site Pi of the OrcaSlicer filament preset .json.',
+        blank=True,
+        help_text=(
+            'Old way, kept so existing filaments keep slicing: path on the site Pi '
+            'of the filament preset .json. Ignored once a file is uploaded above.'
+        ),
     )
 
     class Meta:
@@ -62,6 +173,15 @@ class Filament(models.Model):
 
     def __str__(self):
         return f'{self.filament_type} {self.color}'
+
+    def clean(self):
+        if not self.preset_file and not self.preset_path:
+            raise ValidationError('Upload a filament preset (.json) for this filament.')
+
+    def preset_location(self):
+        """Where OrcaSlicer reads this filament's preset: the uploaded file,
+        else the legacy path ('' if neither)."""
+        return self.preset_file.path if self.preset_file else self.preset_path
 
 
 class Printer(models.Model):
@@ -105,10 +225,10 @@ class Printer(models.Model):
         return self.name
 
     def filament_preset_paths(self):
-        """The loaded filaments' preset paths in slot order, ';'-joined for
+        """The loaded filaments' presets in slot order, ';'-joined for
         OrcaSlicer's --load-filaments ('' if no filament is set)."""
         return ';'.join(
-            slot.filament.preset_path
+            slot.filament.preset_location()
             for slot in self.filament_slots.select_related('filament')
         )
 

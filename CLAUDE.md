@@ -33,9 +33,16 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
 - `Attachment` model (`attachments/models.py`): a Student's uploaded `.stl`
   file, `FileField`-backed, stored under `MEDIA_ROOT` (private — never
   mounted at a public URL, only reachable through authenticated views).
-- `PrinterModel` (name, `settings_path`: machine+process preset paths) and
-  `Filament` (`filament_type`, `color`, `preset_path`; type+color unique) are
-  added by hand in `/admin/`; no teacher forms for them.
+- `PrinterModel` (name, `machine_file`, `process_file`: uploaded OrcaSlicer
+  preset `.json` files, both or neither) and `Filament` (`filament_type`,
+  `color`, `preset_file`: uploaded `.json`; type+color unique) are added by
+  superusers in `/admin/`; no teacher forms for them. Files go to
+  `MEDIA_ROOT/presets/{machine,process,filament}/` (inside `private_media/`, so
+  the Flatpak grant and the backups already cover them) and are validated by
+  `PresetJSONValidator` (JSON object, and `"type"` must match if present). The
+  old path fields `settings_path` / `preset_path` stay as a **legacy fallback**
+  (collapsed "Legacy" fieldset) so existing printers keep slicing; uploaded
+  files win. Remove the legacy fields once nothing uses them.
 - `Printer` model (`jobs/models.py`): name, Bambuddy printer id,
   `serial_number`, `printer_model` FK (nullable only for legacy printers), an
   `is_active` flag, and up to 4 loaded filaments through `PrinterFilament`
@@ -46,8 +53,10 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
   works; drop them in a later release. A teacher picks a printer on `/review/` when approving
   (required once any active printer exists); it sets `Job.printer` (nullable,
   `PROTECT`). The printer decides the slicer presets (`jobs/slicing.py`
-  `_presets_for`: the printer model's presets plus the slot filaments in slot
-  order replace `ORCA_SLICER_*` as a pair,
+  `_presets_for`: the printer model's uploaded machine+process files (else
+  legacy path) plus the slot filaments' uploaded files (else legacy paths) in
+  slot order replace `ORCA_SLICER_*` as a pair; a missing file or filament
+  with no preset raises `SlicerNotConfigured` naming it,
   never mixed), the Bambuddy printer the job is enqueued on, and which
   "Plate cleared, release next" button (one per printer on `/queue/`) starts
   it. Jobs with no printer (older jobs, or no printers set up) use the
@@ -114,8 +123,9 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
   (renamed from `gcode` in migration 0004). OrcaSlicer is a **Flatpak on the site Pi**
   (`ORCA_SLICER_CMD`, default `flatpak run com.orcaslicer.OrcaSlicer`) and
   runs on the host, which is why the site is not run in Docker. Config via settings/env:
-  `ORCA_SLICER_SETTINGS` (machine+process preset JSONs, `;`-separated,
-  required), `ORCA_SLICER_FILAMENTS`, `ORCA_SLICER_DATADIR`,
+  `ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` (the fallback for jobs with
+  no printer or a printer with no model; printer models use their uploaded
+  presets), `ORCA_SLICER_DATADIR`,
   `ORCA_SLICER_TIMEOUT` (300s). Scratch output goes in
   `MEDIA_ROOT/slicing_tmp` (not `/tmp`) because the Flatpak sandbox has a
   private `/tmp`; the sandbox needs `flatpak override --filesystem=` for
@@ -242,6 +252,9 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
   adding printers needs are from the docs only).
 - Drop the unused `jobs_printer.slicer_settings` / `slicer_filaments` columns
   in a later release (see migration 0008).
+- Preset uploads are superuser-only (`/admin/`); replacing a file leaves the
+  old copy in `private_media/presets/`. The uploaded files have not been run
+  through OrcaSlicer on the real site Pi yet; slice one job end to end.
 - No teacher-facing way to rename, deactivate or remove a printer (admin only).
 
 - "Any X1C"-style automatic printer choice: teachers pick the printer by
