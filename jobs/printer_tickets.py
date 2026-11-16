@@ -3,7 +3,8 @@
 A teacher files a ticket on /printers/. The agent sees it in its poll, claims
 it, adds the printer to Bambuddy, waits until Bambuddy is connected to it, and
 reports Bambuddy's id for it (or why it failed). `complete` then creates the
-Printer. Every change here is a guarded UPDATE or runs under a row lock, so a
+Printer, which a teacher gives slicer templates on /printers/ before it can
+be chosen for a job. Every change here is a guarded UPDATE or runs under a row lock, so a
 repeated or late report from the agent can't apply twice.
 """
 from datetime import timedelta
@@ -86,7 +87,6 @@ def complete(ticket, agent, bambuddy_printer_id):
                     name=ticket.name,
                     bambuddy_printer_id=bambuddy_printer_id,
                     serial_number=ticket.serial_number,
-                    printer_model=ticket.printer_model,
                 )
         except IntegrityError:
             _close(

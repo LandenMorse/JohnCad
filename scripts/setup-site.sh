@@ -22,7 +22,7 @@
 #   --no-orca   don't install the OrcaSlicer Flatpak (large download)
 #
 # After it finishes the site answers on this Pi at http://127.0.0.1:8000/.
-# A public address, the print agent and slicer presets are separate steps;
+# A public address, the print agent and the slicer templates are separate steps;
 # the script prints what is left. Full guide: README.md, docs/operations.md.
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
@@ -169,10 +169,10 @@ On this Pi it answers at http://127.0.0.1:8000/ (admin at /admin/).
 Still to do, each described in README.md:
   1. A web address: point a domain at this Pi and put Caddy in front
      ("A web address" in the README, deploy/caddy/Caddyfile.example).
-  2. Slicer presets: "Slicer presets" - the preset .json paths go on each
-     printer in /admin/ (or ORCA_SLICER_SETTINGS in .env).
-  3. The printers' side: set up the print agent and Bambuddy on the Pi at
-     the printers (agent/README.md), then add each printer in /admin/.
+  2. The printers' side: set up the print agent and Bambuddy on the Pi at
+     the printers (agent/README.md), then add each printer on /printers/.
+  3. Slicer templates: on /printers/, upload an OrcaSlicer project (.3mf)
+     and choose it for each printer ("Slicer templates" in the README).
   4. Backups go to $ROOT/backups. Set BACKUP_DIR in .env to a USB drive
      so they survive the SD card failing: docs/operations.md.
 

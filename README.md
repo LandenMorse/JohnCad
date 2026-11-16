@@ -39,10 +39,11 @@ needs no inbound access, tunnel or VPN.
    scripts/setup-site.sh
    ```
    It installs everything, starts the site and sets up nightly backups.
-2. **A web address and slicer presets** on the site Pi: follow
-   [Site Pi setup](#site-pi-setup-production), steps 2 and 3.
+2. **A web address** for the site Pi: follow
+   [Site Pi setup](#site-pi-setup-production), step 2.
 3. **Printer Pi:** follow [agent/README.md](agent/README.md), then add your
-   printers in `/admin/`.
+   printers on the site's **Printers** page and upload a slicer template for
+   them ([Slicer templates](#slicer-templates)).
 
 **Working on the code:** see [CONTRIBUTING.md](CONTRIBUTING.md). You can run
 and test it on any computer in about five minutes, without a Pi or a printer.
@@ -113,8 +114,6 @@ commented list):
 | `POSTGRES_HOST` | `localhost` for host-venv dev; `docker compose up` overrides this to `db` automatically for the containerized web service |
 | `POSTGRES_PORT` | Default `5432`                                                                                                            |
 | `ORCA_SLICER_CMD` | Command to launch OrcaSlicer, default `flatpak run com.orcaslicer.OrcaSlicer`                                             |
-| `ORCA_SLICER_SETTINGS` | Semicolon-separated machine + process preset `.json` files (`--load-settings`); required — blank = slicer not configured  |
-| `ORCA_SLICER_FILAMENTS` | Semicolon-separated filament preset `jm.json` file(s) (`--load-filaments`), optional                                      |
 | `ORCA_SLICER_DATADIR` | Optional OrcaSlicer `--datadir`                                                                                           |
 | `ORCA_SLICER_TIMEOUT` | Slicing timeout in seconds, default `300`                                                                                 |
 | `HTTPS_ENABLED` | `True` once the site is served over HTTPS (marks cookies Secure) |
@@ -212,33 +211,25 @@ same line as a value in `.env`: systemd doesn't strip them. Uploads up to
 512 MB are allowed (`max_size` in the Caddyfile, `DATA_UPLOAD_MAX_MEMORY_SIZE`
 in `cms/settings.py`).
 
-**3. Slicer presets.** Put the Bambu machine/process/filament preset `.json`
-files somewhere on the Pi (e.g. `/home/<user>/orca/`) and let the OrcaSlicer
-sandbox read them (the setup script already did this for `private_media/`):
+**3. Slicer templates.** Nothing to configure on the Pi: teachers upload them
+on the site's **Printers** page (see [Slicer templates](#slicer-templates)).
+They are stored in `private_media/slicer_templates/`, which the setup script
+already lets the OrcaSlicer sandbox read, and which the backups include.
 
-```bash
-flatpak override --user --filesystem=/home/<user>/orca:ro com.orcaslicer.OrcaSlicer
-```
-
-Enter the paths on each Printer in `/admin/` (see the printer Pi section), or
-for a single-printer setup in `.env`:
-
-```
-ORCA_SLICER_SETTINGS=/home/<user>/orca/machine.json;/home/<user>/orca/process.json
-ORCA_SLICER_FILAMENTS=/home/<user>/orca/filament.json
-```
-
-After editing `.env`, run `sudo systemctl restart johncad johncad-slicer`.
-
-Smoke-test slicing before relying on it:
+Smoke-test slicing before relying on it. This is the command JohnCad runs:
 
 ```bash
 mkdir -p private_media/slicing_tmp
-flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir $PWD/private_media/slicing_tmp   --load-settings "/home/<user>/orca/machine.json;/home/<user>/orca/process.json" some_model.stl
+flatpak run com.orcaslicer.OrcaSlicer \
+  --arrange 1 \
+  --slice 0 \
+  --export-3mf "$PWD/private_media/slicing_tmp/output.gcode.3mf" \
+  "$PWD/private_media/slicer_templates/your_template.3mf" \
+  some_model.stl
 ```
 
-It should write a `.gcode` file. Add `--export-3mf out.gcode.3mf` to check
-the `.gcode.3mf` that JohnCad actually sends to Bambuddy. If it fails for lack of a display, try
+It should write `output.gcode.3mf`, the file JohnCad sends to Bambuddy. If it
+fails for lack of a display, try
 `ORCA_SLICER_CMD=xvfb-run -a flatpak run com.orcaslicer.OrcaSlicer` in `.env`
 (`sudo apt install xvfb`).
 
@@ -299,15 +290,12 @@ Docker and the print agent as a service. The full steps are in
 2. **Printer Pi:** clone JohnCad, run `docker compose up -d bambuddy`,
    create a Bambuddy API key, put both keys and the site's address in
    `/etc/johncad-agent.env`, and install the `johncad-agent` service.
-3. **Site Pi, `/admin/`** (once per kind of printer and filament): add a
-   **Printer model** (a name, and the OrcaSlicer machine + process preset
-   `.json` paths) and the **Filaments** you stock (type, color, and the
-   filament preset `.json` path).
-4. **Teachers add the printers** on the **Printers** page (`/printers/`):
-   name, model, IP address, access code and serial number. The print agent
-   adds the printer to Bambuddy and the page shows when it is connected and
-   ready. Teachers also set which filament is in each slot there, and choose
-   the printer when approving a job on `/review/`.
+3. **Teachers add the printers** on the **Printers** page (`/printers/`):
+   name, IP address, access code and serial number. The print agent adds the
+   printer to Bambuddy and the page shows when it is connected.
+4. **Teachers upload a slicer template** on the same page and choose it for
+   the printer ([Slicer templates](#slicer-templates)). The printer is then
+   ready, and can be chosen when approving a job on `/review/`.
 
 The printer Pi needs outbound HTTPS to the site's domain and nothing else; ask
 school IT to allow that domain if it is blocked. More on the network and the
@@ -316,20 +304,41 @@ Bambuddy API: [docs/bambuddy.md](docs/bambuddy.md).
 ### OrcaSlicer
 
 Slicing (`jobs/slicing.py`) shells out to the OrcaSlicer CLI, installed as a
-Flatpak on the Pi and run on the host alongside Django (not in Docker). Point
-`ORCA_SLICER_SETTINGS` / `ORCA_SLICER_FILAMENTS` at the installed Bambu
-machine/process/filament preset `.json` files.
+Flatpak on the Pi and run on the host alongside Django (not in Docker). It
+slices into a template `.3mf` that holds the machine, process and filament
+settings: see [Slicer templates](#slicer-templates).
 
-The Flatpak sandbox must be able to read the STL and preset files and write
-its output. Scratch output goes under `MEDIA_ROOT/slicing_tmp`, so grant:
+The Flatpak sandbox must be able to read the STL and the template and write
+its output. All three are under `MEDIA_ROOT` (`attachments/`,
+`slicer_templates/`, `slicing_tmp/`), so one grant covers them (the setup
+script does this):
 
 ```bash
 flatpak override --user --filesystem=/path/to/JohnCad/private_media com.orcaslicer.OrcaSlicer
-flatpak override --user --filesystem=/path/to/preset/dir:ro com.orcaslicer.OrcaSlicer
 ```
 
-Smoke-test headless on the Pi before relying on it:
-`flatpak run com.orcaslicer.OrcaSlicer --slice 0 --outputdir /out --load-settings "machine.json;process.json" in.stl`.
+### Slicer templates
+
+A slicer template is an OrcaSlicer project (`.3mf`) saved with the printer,
+filament and process settings you want. JohnCad adds the Student's `.stl` to
+it, arranges it and slices, so the template decides everything about how the
+job prints. There are no preset files, paths or `.env` settings to maintain.
+
+To make one: in OrcaSlicer choose the printer, filament and process, clear
+the plate (anything left on it is printed with every job), and use
+**File > Save Project As**. Then on the site's **Printers** page:
+
+1. **Upload a template**: give it a name teachers will recognise (for example
+   "X1C PLA 0.2mm") and tick the printers it is for. The page shows the
+   printer, process and filament presets found in the file.
+2. **Manage** a printer to tick which templates it offers and which one is
+   the default. Templates are a shared library: one upload can serve every
+   printer of the same kind.
+
+When approving a job on `/review/` a teacher picks a printer and one of its
+templates in one dropdown. A printer with no template shows as
+**Needs a template** and can't be chosen. A template can be deleted unless a
+job is waiting to be sliced with it; jobs already printed keep their history.
 
 ## Helper commands
 
@@ -404,16 +413,17 @@ JohnCad/
 │   ├── models.py                 # Job (FK -> attachments.Attachment)
 │   ├── admin.py                    # JobAdmin + approve/reject actions
 │   ├── slicing.py                    # OrcaSlicer CLI integration
+│   ├── threemf.py                    # validates uploaded slicer templates (.3mf) and reads their presets
 │   ├── bambuddy_client.py              # Bambuddy REST API details + client, no Django (shared with agent/)
 │   ├── bambuddy.py                     # direct mode: Django wrapper for it (settings) + webhook parsing
 │   ├── dispatch.py                     # print agent state changes; direct mode: dispatch, status sync, release-next
 │   ├── agent_api.py, agent_urls.py     # print agent API, mounted at /agent-api/v1/
 │   ├── management/commands/            # slice_worker, create_agent_key, dispatch_worker (direct mode)
-│   ├── views.py                        # attachment_export, queue, review
-│   ├── urls.py                           # attachments/<id>/export/, queue/, review/
+│   ├── views.py                        # attachment_export, queue, review, printers, slicer templates
+│   ├── urls.py                           # attachments/<id>/export/, queue/, review/, printers/
 │   ├── api_views.py, api_urls.py           # direct mode: Bambuddy webhook, mounted at /api/
 │   ├── migrations/                           # schema history
-│   └── templates/jobs/                         # queue.html
+│   └── templates/jobs/                         # queue, review, printers, printer_detail, template_upload
 ├── agent/                      # print agent for the printer Pi (johncad_agent.py, systemd unit, README)
 ├── scripts/                    # setup-site.sh, update.sh, backup.sh, restore.sh, restore-drill.sh
 ├── deploy/systemd/             # service and backup-timer units that setup-site.sh installs
@@ -453,19 +463,18 @@ The raw file a Student uploads.
 One Attachment can have many `Job`s (a Student can export/request-print the
 same file more than once).
 
-### `PrinterModel`, `Filament`, `Printer`
+### `SlicerTemplate`, `Printer`
 
 | Model | Fields | Notes |
 |---|---|---|
-| `PrinterModel` | `name`, `settings_path` | A kind of printer and its OrcaSlicer machine + process preset paths (`;`-separated). Added in `/admin/` |
-| `Filament` | `filament_type`, `color`, `preset_path` | A filament and its OrcaSlicer filament preset. Type + color is unique. Added in `/admin/` |
-| `Printer` | `name`, `bambuddy_printer_id`, `serial_number`, `printer_model` (FK), `is_active` | Created by a successful add-printer ticket. Its IP address and access code are kept by Bambuddy, not here |
-| `PrinterFilament` | `printer` (FK), `filament` (FK), `slot` (1-4) | Which filament is loaded in each slot; one row per used slot. Slot order is the order the slicer gets the presets in |
-| `AddPrinterTicket` | `name`, `ip_address`, `access_code`, `serial_number`, `printer_model` (FK), `status`, `error`, `bambuddy_printer_id`, `printer`, `requested_by`, `agent`, timestamps | A teacher's request to add a printer. Status: `pending -> adding -> succeeded`/`failed`, or `cancelled` |
+| `SlicerTemplate` | `name`, `file`, `machine_preset`, `process_preset`, `filament_presets`, `uploaded_by`, `uploaded_at` | An OrcaSlicer project `.3mf` uploaded by a teacher, stored in `MEDIA_ROOT/slicer_templates/`. The three preset fields are read from the file at upload, for display. The file is never replaced: upload a new template instead |
+| `Printer` | `name`, `bambuddy_printer_id`, `serial_number`, `templates` (M2M), `default_template` (FK), `is_active` | Created by a successful add-printer ticket. `templates` are the ones teachers can choose for it. Its IP address and access code are kept by Bambuddy, not here |
+| `AddPrinterTicket` | `name`, `ip_address`, `access_code`, `serial_number`, `status`, `error`, `bambuddy_printer_id`, `printer`, `requested_by`, `agent`, timestamps | A teacher's request to add a printer. Status: `pending -> adding -> succeeded`/`failed`, or `cancelled` |
 
-A job slices with its printer's `PrinterModel` presets and slot filaments. A
-printer with no model (from before models existed) uses `ORCA_SLICER_SETTINGS`
-and `ORCA_SLICER_FILAMENTS` from `.env`.
+A job is sliced into `Job.template`, which the teacher picks from the
+printer's templates when approving. There is no fallback: a job with no
+template (or whose template was deleted before slicing) stops with a
+slicing error until a teacher retries it with one.
 
 ### `Job`
 
@@ -476,6 +485,7 @@ actually moves through the approval → slicing → printing pipeline.
 |---|---|
 | `user` | FK to `User`, `related_name='jobs'` — who requested this print |
 | `attachment` | FK to `Attachment`, `related_name='jobs'` — what's being printed |
+| `printer` / `template` | The `Printer` and `SlicerTemplate` the teacher chose when approving: where the job is sent and what it is sliced into. Null until approved |
 | `status` | One of `pending`/`approved`/`queued`/`working`/`finished`/`rejected`/`failed` — see status table below |
 | `sliced_file` | Sliced `.gcode.3mf`, populated by `slicing.slice_to_3mf()` once a job is approved and slicing succeeds. Blank until then. |
 | `created_at` | Set when the Student clicks Export |
@@ -556,7 +566,10 @@ producing multiple independent jobs.
 Staff accounts (`is_staff`, e.g. teachers) approve or reject jobs at
 `/review/` (`jobs/views.py`, shared logic in `jobs/services.py`). It lists
 every job — new and past — newest first, with **Approve** / **Reject**
-buttons for `pending` jobs and **Retry** for jobs whose slicing failed. It
+buttons for `pending` jobs and **Retry** for jobs whose slicing failed. Next
+to Approve (and Retry) is one dropdown of every ready printer's slicer
+templates ("X1C: PLA 0.2mm"); the choice sets the job's printer and template,
+and can be changed on a retry. It
 shows Waiting to slice / Slicing… / Slicing failed (with the reason) for
 approved jobs and refreshes itself while any are in progress. Non-staff users
 get a 403.
@@ -583,15 +596,17 @@ a failing job isn't retried in a loop until a teacher clicks Retry. Claims left
 by a crashed worker are released after `ORCA_SLICER_TIMEOUT` + 60s.
 
 `slice_to_3mf(job)` invokes OrcaSlicer as a subprocess
-(`<ORCA_SLICER_CMD> --slice 0 --outputdir <tmp> --load-settings <settings>
-[--load-filaments <filaments>] [--datadir <dir>] <stl>`), picks up the
-generated `.gcode.3mf` (`--export-3mf`) into `job.sliced_file`, and advances
-the job to `queued`. No shell interpolation (`shell=True`) is used. Configurable via
+(`<ORCA_SLICER_CMD> --arrange 1 --slice 0 --export-3mf <tmp>/output.gcode.3mf
+[--datadir <dir>] <template.3mf> <stl>`), so the `.stl` is added to the
+template, arranged, sliced with the template's settings, and the generated
+`.gcode.3mf` is saved into `job.sliced_file`. The job then advances to
+`queued`. The template is the job's `SlicerTemplate` file; a job without one
+stops in `approved` with the reason in `slicing_error`. No shell interpolation (`shell=True`) is used. Configurable via
 the `ORCA_SLICER_*` env vars above.
 
 ### Printers page (`/printers/`, teachers only)
 
-Teachers add a printer by filling in its name, model, IP address, LAN access
+Teachers add a printer by filling in its name, IP address, LAN access
 code and serial number. That files an **add-printer ticket**
 (`AddPrinterTicket`), because the site can't reach the school network itself.
 The print agent picks the ticket up on its next check-in, adds the printer to
@@ -602,10 +617,13 @@ a wrong access code) and refreshes by itself while one is in progress. A
 request the agent hasn't started on can be cancelled. The access code is
 never shown again and is erased from the ticket as soon as it is closed.
 
-The same page lists the printers, with a row of pickers for the filament
-loaded in each of a printer's four slots. Printer models and filaments
-themselves are added by an admin in `/admin/`. Logic:
-`jobs/printer_tickets.py`, `jobs/forms.py`.
+The top of the page is a grid with one card per printer: its name, serial
+number, whether it is **Ready**, **Not in use** or **Needs a template**, and
+the templates it offers. **Manage** opens the printer's own page
+(`/printers/<id>/`), where a teacher can rename it, take it out of use, and
+tick its templates and default. Below the grid is the slicer template
+library (upload, download, delete; see [Slicer templates](#slicer-templates)).
+Logic: `jobs/printer_tickets.py`, `jobs/forms.py`, `jobs/threemf.py`.
 
 ### Public print queue (`/queue/`)
 

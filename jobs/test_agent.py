@@ -20,7 +20,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .bambuddy_client import BambuddyError
-from .models import AddPrinterTicket, Job, Printer, PrinterAgent, PrinterModel
+from .models import AddPrinterTicket, Job, Printer, PrinterAgent
 from .tests import ReviewTestBase
 
 if sys.platform == 'win32':
@@ -665,12 +665,9 @@ class AgentProgramTests(AgentTestBase):
     # -- adding printers ---------------------------------------------------
 
     def printer_ticket(self, **kwargs):
-        model = PrinterModel.objects.get_or_create(
-            name='X1 Carbon 0.4', defaults={'settings_path': 'm.json;p.json'},
-        )[0]
         fields = {
             'name': 'Lab X1C', 'ip_address': '192.168.1.50', 'access_code': 'CODE1234',
-            'serial_number': '01P00A000000002', 'printer_model': model,
+            'serial_number': '01P00A000000002',
             'requested_by': self.teacher, **kwargs,
         }
         return AddPrinterTicket.objects.create(**fields)

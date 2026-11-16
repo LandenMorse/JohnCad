@@ -57,18 +57,17 @@ only moves finished files.
    leaked key: the admin action **Generate a new key**, or
    `create_agent_key school-pi --rotate`. Unticking **Is active** blocks the
    agent immediately.
-5. In `/admin/`, add a **Printer model** for each kind of printer (a name
-   and the OrcaSlicer machine + process preset `.json` paths, `;`-separated)
-   and a **Filament** for each filament you stock (type, color, filament
-   preset `.json` path).
-6. Once the agent is running (next section), teachers add printers on the
-   site's **Printers** page (`/printers/`): name, model, IP address, access
-   code and serial number. The agent adds the printer to its Bambuddy, waits
-   until Bambuddy is connected to it, and reports back; the page shows
-   "Added", or the reason it failed. Teachers then choose the printer when
-   approving a job on `/review/`; it decides the slicer presets and where the
-   job is sent. Until a printer exists, jobs use `ORCA_SLICER_SETTINGS` from
-   `.env` and the agent's `BAMBUDDY_PRINTER_ID` (single-printer setup).
+5. Once the agent is running (next section), teachers add printers on the
+   site's **Printers** page (`/printers/`): name, IP address, access code and
+   serial number. The agent adds the printer to its Bambuddy, waits until
+   Bambuddy is connected to it, and reports back; the page shows "Added", or
+   the reason it failed.
+6. On the same page a teacher uploads a **slicer template** (an OrcaSlicer
+   project `.3mf` holding the machine, process and filament settings) and
+   chooses it for the printer. A printer can't be chosen for a job until it
+   has a template. When approving a job on `/review/`, teachers pick the
+   printer and one of its templates: the printer decides where the job is
+   sent, the template how it is sliced.
 
 Caddy needs no change. The agent API is under `/agent-api/`, not `/api/`, so
 `respond /api/* 404` doesn't block it. It returns 404 unless

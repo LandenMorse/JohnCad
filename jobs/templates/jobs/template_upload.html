@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Upload a template{% endblock %}
+{% block content %}
+<h1>Upload a template</h1>
+<p class="subtitle"><a class="back-link" href="{% url 'printers' %}">All printers</a></p>
+
+<div class="card">
+    <p class="subtitle">In OrcaSlicer, choose the printer, filament and process settings you want, clear the plate, and use File &gt; Save Project As. Upload that .3mf here.</p>
+    <form method="post" enctype="multipart/form-data" class="choice-form">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <p>{{ form.name.errors }}{{ form.name.label_tag }} {{ form.name }}
+            <span class="helptext">{{ form.name.help_text }}</span></p>
+        <p>{{ form.file.errors }}{{ form.file.label_tag }} {{ form.file }}
+            <span class="helptext">{{ form.file.help_text }}</span></p>
+        {% if form.printers.field.queryset.exists %}
+        <fieldset>
+            <legend>{{ form.printers.label }}</legend>
+            {{ form.printers.errors }}
+            {{ form.printers }}
+            <span class="helptext">{{ form.printers.help_text }}</span>
+        </fieldset>
+        {% endif %}
+        <button type="submit">Upload</button>
+    </form>
+</div>
+{% endblock %}

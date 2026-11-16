@@ -11,6 +11,9 @@ urlpatterns = [
     path('review/<int:pk>/reject/', views.review_reject, name='job-review-reject'),
     path('review/<int:pk>/retry-dispatch/', views.review_retry_dispatch, name='job-review-retry-dispatch'),
     path('printers/', views.printers, name='printers'),
-    path('printers/<int:pk>/filaments/', views.printer_filaments, name='printer-filaments'),
+    path('printers/<int:pk>/', views.printer_detail, name='printer-detail'),
     path('printers/tickets/<int:pk>/cancel/', views.printer_ticket_cancel, name='printer-ticket-cancel'),
+    path('printers/templates/upload/', views.template_upload, name='template-upload'),
+    path('printers/templates/<int:pk>/download/', views.template_download, name='template-download'),
+    path('printers/templates/<int:pk>/delete/', views.template_delete, name='template-delete'),
 ]

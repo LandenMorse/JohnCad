@@ -405,7 +405,7 @@ td a::before { content: "> "; color: var(--muted-dim); }
 
 .filter-bar { margin-bottom: 1.25rem; }
 
-button.btn-ghost {
+button.btn-ghost, a.btn-ghost {
   background: transparent;
   color: var(--text);
   border: 1px solid var(--border-strong);
@@ -413,7 +413,7 @@ button.btn-ghost {
   font-size: 1rem;
   box-shadow: var(--shadow-offset) var(--shadow-offset) 0 0 var(--border);
 }
-button.btn-ghost:hover { border-color: var(--accent); color: var(--accent-strong); }
+button.btn-ghost:hover, a.btn-ghost:hover { border-color: var(--accent); color: var(--accent-strong); }
 
 .card-action { margin-top: 1.25rem; }
 
@@ -452,6 +452,31 @@ button.btn-ghost:hover { border-color: var(--accent); color: var(--accent-strong
 .auth-footer a { color: var(--accent-strong); text-decoration: none; }
 .auth-footer a:hover { text-decoration: underline; }
 
-/* /printers/: one row of slot pickers per printer */
-.filament-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.6rem 1rem; }
-.filament-form label { display: flex; flex-direction: column; gap: 0.2rem; }
+/* Links styled as buttons */
+a.btn { display: inline-block; text-decoration: none; }
+
+/* /printers/: one card per printer */
+.printer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.printer-grid .card { margin-bottom: 0; }
+.printer-card { display: flex; flex-direction: column; gap: 0.9rem; }
+.printer-card .btn { margin-top: auto; align-self: flex-start; }
+.printer-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.printer-card-head h3 { margin: 0; font-size: 1.5rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.printer-facts { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.9rem; margin: 0; }
+.printer-facts dt { color: var(--muted); text-transform: uppercase; font-size: 0.95rem; letter-spacing: 0.03em; }
+.printer-facts dd { margin: 0; overflow-wrap: anywhere; }
+.printer-templates ul { list-style: none; margin: 0.3rem 0 0; padding: 0; }
+.printer-templates li::before { content: "- "; color: var(--muted-dim); }
+
+/* Forms with tick-box lists (printer settings, template upload) */
+.choice-form .printer-facts { margin-bottom: 1.25rem; }
+.choice-form fieldset { border: 1px solid var(--border); margin: 0 0 1rem; padding: 0.75rem 1rem; }
+.choice-form legend { color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; padding: 0 0.4rem; }
+.choice-form fieldset > div > div { margin: 0.25rem 0; }
+.choice-form fieldset label, .check-label { display: inline-block; margin: 0; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 1.1rem; }
+input[type="checkbox"] { accent-color: var(--accent); margin-right: 0.4rem; }
