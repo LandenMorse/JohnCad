@@ -18,38 +18,56 @@ from django.conf import settings
 from django.db import migrations, models
 
 
-LEFTOVER_PRINTER_COLUMNS = ('slicer_settings', 'slicer_filaments')
+# Columns 0008 and 0009 stopped using but left in the database (with a
+# default of ''): (model, column, max_length).
+LEFTOVER_PRINTER_COLUMNS = (
+    ('Printer', 'slicer_settings', 1000),
+    ('Printer', 'slicer_filaments', 1000),
+)
+# The same, on tables this migration deletes. Only needed when reversing.
+LEFTOVER_DELETED_TABLE_COLUMNS = (
+    ('PrinterModel', 'settings_path', 1000),
+    ('Filament', 'preset_path', 500),
+)
 
 
-def _printer_columns(apps, schema_editor):
+def _existing_columns(schema_editor, table):
     connection = schema_editor.connection
-    table = apps.get_model('jobs', 'Printer')._meta.db_table
     with connection.cursor() as cursor:
         description = connection.introspection.get_table_description(cursor, table)
-    return schema_editor.quote_name(table), {column.name for column in description}
+    return {column.name for column in description}
+
+
+def _restore_columns(apps, schema_editor, columns):
+    """Put leftover columns back (empty): reversing 0008 and 0009 needs them."""
+    for model, column, max_length in columns:
+        table = apps.get_model('jobs', model)._meta.db_table
+        if column not in _existing_columns(schema_editor, table):
+            schema_editor.execute(
+                f'ALTER TABLE {schema_editor.quote_name(table)} '
+                f'ADD COLUMN {schema_editor.quote_name(column)} '
+                f"varchar({max_length}) DEFAULT '' NOT NULL"
+            )
 
 
 def drop_leftover_printer_columns(apps, schema_editor):
-    """0008 stopped using these two columns but left them in the database.
-    SQLite has already lost them (it rebuilds the table above), hence the
+    """SQLite has already lost them (it rebuilds the table above), hence the
     check."""
-    table, existing = _printer_columns(apps, schema_editor)
-    for column in LEFTOVER_PRINTER_COLUMNS:
-        if column in existing:
+    for model, column, _ in LEFTOVER_PRINTER_COLUMNS:
+        table = apps.get_model('jobs', model)._meta.db_table
+        if column in _existing_columns(schema_editor, table):
             schema_editor.execute(
-                f'ALTER TABLE {table} DROP COLUMN {schema_editor.quote_name(column)}'
+                f'ALTER TABLE {schema_editor.quote_name(table)} '
+                f'DROP COLUMN {schema_editor.quote_name(column)}'
             )
 
 
 def restore_leftover_printer_columns(apps, schema_editor):
-    """Put the columns back (empty), as reversing 0008 writes to them."""
-    table, existing = _printer_columns(apps, schema_editor)
-    for column in LEFTOVER_PRINTER_COLUMNS:
-        if column not in existing:
-            schema_editor.execute(
-                f'ALTER TABLE {table} ADD COLUMN {schema_editor.quote_name(column)} '
-                "varchar(1000) DEFAULT '' NOT NULL"
-            )
+    _restore_columns(apps, schema_editor, LEFTOVER_PRINTER_COLUMNS)
+
+
+def restore_deleted_table_columns(apps, schema_editor):
+    _restore_columns(apps, schema_editor, LEFTOVER_DELETED_TABLE_COLUMNS)
 
 
 class Migration(migrations.Migration):
@@ -60,6 +78,9 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # First here, so it runs last when reversing: after the deleted tables
+        # have been created again.
+        migrations.RunPython(migrations.RunPython.noop, restore_deleted_table_columns),
         migrations.CreateModel(
             name='SlicerTemplate',
             fields=[

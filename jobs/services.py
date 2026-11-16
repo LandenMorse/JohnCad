@@ -112,7 +112,9 @@ def claim_next_job():
     """Atomically claim the oldest approved job awaiting slicing, or None."""
     with transaction.atomic():
         job = (
-            Job.objects.select_for_update(skip_locked=True)
+            # of=('self',): lock the job row only. Postgres refuses FOR UPDATE on
+            # the nullable template join otherwise.
+            Job.objects.select_for_update(skip_locked=True, of=('self',))
             .select_related('attachment', 'template')
             .filter(
                 status=Job.Status.APPROVED,
