@@ -1,31 +1,25 @@
-"""Printer models, filaments, the teacher /printers/ page and the
-"add printer" tickets the print agent carries out (jobs/printer_tickets.py)."""
+"""The /printers/ pages: the printer grid, managing one printer, the slicer
+template library, and the "add printer" tickets the print agent carries out
+(jobs/printer_tickets.py)."""
 import json
 import os
-from unittest import skipIf
 from datetime import timedelta
-from unittest import mock
+from unittest import skipIf
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, connection, transaction
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from . import printer_tickets
-from .forms import AddPrinterTicketForm, PrinterFilamentsForm
-from .models import (
-    AddPrinterTicket,
-    Filament,
-    Job,
-    Printer,
-    PrinterAgent,
-    PrinterFilament,
-    PrinterModel,
-)
-from .slicing import SlicerNotConfigured, slice_to_3mf
-from .tests import ReviewTestBase, fake_orca
+from .forms import AddPrinterTicketForm, PrinterForm, SlicerTemplateForm
+from .models import AddPrinterTicket, Job, Printer, PrinterAgent, SlicerTemplate
+from .services import delete_template
+from .tests import PROJECT_SETTINGS, ReviewTestBase, template_3mf
+from .threemf import MAX_TEMPLATE_BYTES, Presets, read_presets
 
 Status = AddPrinterTicket.Status
 API = '/agent-api/v1/'
@@ -38,109 +32,174 @@ VALID = {
 
 
 class PrinterTestBase(ReviewTestBase):
-    @classmethod
-    def setUpTestData(cls):
-        super().setUpTestData()
-        cls.x1c_model = PrinterModel.objects.create(name='X1 Carbon 0.4')
-        cls.pla_black = Filament.objects.create(filament_type='PLA', color='Black')
-        cls.petg_white = Filament.objects.create(filament_type='PETG', color='White')
-
     def ticket(self, **kwargs):
-        fields = {**VALID, 'printer_model': self.x1c_model, 'requested_by': self.teacher, **kwargs}
+        fields = {**VALID, 'requested_by': self.teacher, **kwargs}
         return AddPrinterTicket.objects.create(**fields)
 
     def form_data(self, **kwargs):
-        return {**VALID, 'printer_model': self.x1c_model.pk, **kwargs}
+        return {**VALID, **kwargs}
 
 
-@override_settings(ORCA_SLICER_CMD='orca')
-class PrinterModelSlicingTests(PrinterTestBase):
-    def slice(self, job):
-        commands = []
-        with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
-            slice_to_3mf(job)
-        return commands[0]
+class TemplateFileTests(SimpleTestCase):
+    """jobs/threemf.py: what counts as a template, and what is read from it."""
 
-    def printer(self, **kwargs):
-        kwargs.setdefault('printer_model', self.x1c_model)
-        return Printer.objects.create(name='X1C', bambuddy_printer_id=1, **kwargs)
+    def test_reads_the_preset_names(self):
+        upload = template_3mf()
+        self.assertEqual(read_presets(upload), Presets(
+            machine='Bambu Lab X1 Carbon 0.4 nozzle',
+            process='0.20mm Standard @BBL X1C',
+            filaments=('Bambu PLA Basic @BBL X1C',),
+        ))
+        # Left at the start, so it can still be saved.
+        self.assertEqual(upload.tell(), 0)
 
-    def template(self, name):
-        path = os.path.join(os.path.dirname(self.template_file), name)
-        with open(path, 'wb') as f:
-            f.write(b'template')
-        return path
-
-    def test_printer_models_template_replaces_the_env_default(self):
-        self.x1c_model.template_path = self.template('x1c.3mf')
-        self.x1c_model.save()
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=self.printer()))
-        self.assertEqual(command[-2], self.x1c_model.template_path)
-
-    def test_printers_own_template_beats_its_models(self):
-        self.x1c_model.template_path = self.template('x1c.3mf')
-        self.x1c_model.save()
-        own = self.template('lab-x1c.3mf')
-        command = self.slice(
-            self.make_job(status=Job.Status.APPROVED, printer=self.printer(template_path=own)),
+    def test_missing_or_odd_settings_values_are_blank(self):
+        self.assertEqual(read_presets(template_3mf({})), Presets())
+        self.assertEqual(
+            read_presets(template_3mf({
+                'printer_settings_id': 5, 'filament_settings_id': 'Generic PLA',
+            })),
+            Presets(filaments=('Generic PLA',)),
         )
-        self.assertEqual(command[-2], own)
 
-    def test_model_without_template_falls_back_to_the_env_default(self):
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=self.printer()))
-        self.assertEqual(command[-2], self.template_file)
+    def test_rejects_files_that_are_not_projects(self):
+        for upload, message in (
+            (SimpleUploadedFile('x.3mf', b'not a zip'), 'not a valid .3mf'),
+            (template_3mf(None), 'no slicer settings'),
+            (template_3mf(['a', 'list']), 'not a valid .3mf'),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesMessage(ValidationError, message):
+                    read_presets(upload)
 
-    def test_printer_without_model_falls_back_to_the_env_default(self):
-        printer = self.printer(printer_model=None)
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[-2], self.template_file)
-
-    def test_loaded_filaments_are_not_passed_to_the_slicer(self):
-        printer = self.printer()
-        PrinterFilament.objects.create(printer=printer, filament=self.pla_black, slot=1)
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertNotIn('--load-filaments', command)
-        self.assertNotIn('--load-settings', command)
-
-    @override_settings(ORCA_SLICER_TEMPLATE='')
-    def test_no_template_anywhere_is_not_configured(self):
-        job = self.make_job(status=Job.Status.APPROVED, printer=self.printer(printer_model=None))
-        with self.assertRaisesMessage(SlicerNotConfigured, 'No slicer template'):
-            slice_to_3mf(job)
+    def test_rejects_oversized_files(self):
+        upload = template_3mf()
+        upload.size = MAX_TEMPLATE_BYTES + 1
+        with self.assertRaisesMessage(ValidationError, 'at most'):
+            read_presets(upload)
 
 
-class PrinterFilamentModelTests(PrinterTestBase):
+class SlicerTemplateModelTests(PrinterTestBase):
+    def test_presets_are_read_when_uploaded(self):
+        self.assertEqual(
+            (self.template.machine_preset, self.template.process_preset,
+             self.template.filament_presets),
+            (PROJECT_SETTINGS['printer_settings_id'], PROJECT_SETTINGS['print_settings_id'],
+             PROJECT_SETTINGS['filament_settings_id']),
+        )
+        self.assertTrue(self.template.file.name.startswith('slicer_templates/'))
+
+    def test_full_clean_rejects_a_bad_file_or_extension(self):
+        for upload in (template_3mf(None), template_3mf(name='template.zip')):
+            with self.assertRaises(ValidationError) as caught:
+                SlicerTemplate(name='Bad', file=upload).full_clean()
+            self.assertIn('file', caught.exception.message_dict)
+
+    def test_offer_template_sets_the_first_default_only(self):
+        printer = Printer.objects.create(name='X1C', bambuddy_printer_id=1)
+        other = SlicerTemplate.objects.create(name='Other', file=template_3mf())
+        printer.offer_template(self.template)
+        printer.offer_template(other)
+        printer.refresh_from_db()
+        self.assertEqual(printer.default_template, self.template)
+        self.assertEqual(set(printer.templates.all()), {self.template, other})
+
+    def test_approvable_needs_in_use_and_a_template(self):
+        ready = self.make_printer('Ready', 1)
+        self.make_printer('Off', 2, is_active=False)
+        Printer.objects.create(name='Bare', bambuddy_printer_id=3)
+        self.assertEqual(list(Printer.objects.approvable()), [ready])
+
+    def test_delete_removes_the_file_and_unlinks_printers_and_jobs(self):
+        printer = self.make_printer()
+        job = self.make_job(status=Job.Status.FINISHED, printer=printer, template=self.template)
+        path = self.template.file.path
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertTrue(delete_template(self.template))
+        self.assertFalse(os.path.exists(path))
+        printer.refresh_from_db()
+        job.refresh_from_db()
+        self.assertEqual((printer.default_template, job.template), (None, None))
+        self.assertFalse(Printer.objects.approvable().exists())
+
+    def test_cannot_delete_while_a_job_waits_to_be_sliced_with_it(self):
+        self.make_job(status=Job.Status.APPROVED, template=self.template)
+        self.assertFalse(delete_template(self.template))
+        self.assertTrue(SlicerTemplate.objects.filter(pk=self.template.pk).exists())
+        self.assertTrue(os.path.exists(self.template.file.path))
+
+
+class PrinterFormTests(PrinterTestBase):
     def setUp(self):
-        self.printer = Printer.objects.create(
-            name='X1C', bambuddy_printer_id=1, printer_model=self.x1c_model,
-        )
+        self.printer = Printer.objects.create(name='X1C', bambuddy_printer_id=1)
+        self.fine = SlicerTemplate.objects.create(name='Fine', file=template_3mf())
 
-    def test_one_filament_per_slot(self):
-        PrinterFilament.objects.create(printer=self.printer, filament=self.pla_black, slot=1)
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            PrinterFilament.objects.create(printer=self.printer, filament=self.petg_white, slot=1)
+    def form(self, **data):
+        return PrinterForm({'name': 'X1C', 'is_active': 'on', **data}, instance=self.printer)
 
-    def test_slot_must_be_1_to_4(self):
-        with self.assertRaises(ValidationError):
-            PrinterFilament(printer=self.printer, filament=self.pla_black, slot=5).full_clean()
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            PrinterFilament.objects.create(printer=self.printer, filament=self.pla_black, slot=5)
-
-    def test_filament_type_and_color_are_unique_together(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            Filament.objects.create(filament_type='PLA', color='Black')
-
-    def test_filaments_form_replaces_slots(self):
-        PrinterFilament.objects.create(printer=self.printer, filament=self.pla_black, slot=1)
-        form = PrinterFilamentsForm(
-            {'slot_2': self.petg_white.pk, 'slot_4': self.pla_black.pk}, printer=self.printer,
-        )
+    def test_saves_templates_and_default(self):
+        form = self.form(templates=[self.template.pk, self.fine.pk], default_template=self.fine.pk)
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
-        self.assertEqual(
-            list(self.printer.filament_slots.values_list('slot', 'filament__color')),
-            [(2, 'White'), (4, 'Black')],
+        self.printer.refresh_from_db()
+        self.assertEqual(self.printer.default_template, self.fine)
+        self.assertEqual(self.printer.templates.count(), 2)
+
+    def test_default_is_the_first_ticked_when_not_chosen(self):
+        form = self.form(templates=[self.template.pk, self.fine.pk])
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.printer.refresh_from_db()
+        # Templates are ordered by name: "Fine" before "Standard".
+        self.assertEqual(self.printer.default_template, self.fine)
+
+    def test_default_must_be_ticked(self):
+        form = self.form(templates=[self.template.pk], default_template=self.fine.pk)
+        self.assertFalse(form.is_valid())
+        self.assertIn('default_template', form.errors)
+
+    def test_unticking_everything_clears_the_default(self):
+        self.printer.set_templates([self.template])
+        form = self.form()
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.printer.refresh_from_db()
+        self.assertIsNone(self.printer.default_template)
+        self.assertFalse(self.printer.templates.exists())
+
+    def test_rename_and_take_out_of_use(self):
+        Printer.objects.create(name='Taken', bambuddy_printer_id=2)
+        self.assertIn('name', PrinterForm({'name': 'Taken'}, instance=self.printer).errors)
+        form = PrinterForm({'name': 'Lab 1'}, instance=self.printer)
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.printer.refresh_from_db()
+        self.assertEqual((self.printer.name, self.printer.is_active), ('Lab 1', False))
+
+
+class SlicerTemplateFormTests(PrinterTestBase):
+    def test_upload_records_who_and_offers_it_on_the_chosen_printers(self):
+        bare = Printer.objects.create(name='Bare', bambuddy_printer_id=1)
+        other = SlicerTemplate.objects.create(name='Other', file=template_3mf())
+        stocked = self.make_printer('Stocked', 2, templates=[other])
+        form = SlicerTemplateForm(
+            {'name': 'PETG', 'printers': [bare.pk, stocked.pk]}, {'file': template_3mf()},
+            uploaded_by=self.teacher,
         )
+        self.assertTrue(form.is_valid(), form.errors)
+        template = form.save()
+        self.assertEqual(template.uploaded_by, self.teacher)
+        self.assertEqual(template.machine_preset, PROJECT_SETTINGS['printer_settings_id'])
+        bare.refresh_from_db()
+        stocked.refresh_from_db()
+        self.assertEqual((bare.default_template, stocked.default_template), (template, other))
+        self.assertIn(template, stocked.templates.all())
+
+    def test_rejects_a_plain_model_3mf_and_a_taken_name(self):
+        form = SlicerTemplateForm({'name': 'Standard'}, {'file': template_3mf(None)})
+        self.assertFalse(form.is_valid())
+        self.assertEqual(set(form.errors), {'name', 'file'})
+        self.assertIn('no slicer settings', form.errors['file'][0])
 
 
 class AddPrinterTicketFormTests(PrinterTestBase):
@@ -160,7 +219,6 @@ class AddPrinterTicketFormTests(PrinterTestBase):
             ('access_code', '1234'),
             ('access_code', ''),
             ('serial_number', '01P00A-0000'),
-            ('printer_model', ''),
             ('name', ''),
         ):
             with self.subTest(field=field, value=value):
@@ -213,8 +271,8 @@ class PrintersPageTests(PrinterTestBase):
         self.assertRedirects(response, reverse('printers'))
         ticket = AddPrinterTicket.objects.get()
         self.assertEqual(
-            (ticket.name, ticket.status, ticket.requested_by, ticket.printer_model),
-            ('Lab X1C', Status.PENDING, self.teacher, self.x1c_model),
+            (ticket.name, ticket.status, ticket.requested_by),
+            ('Lab X1C', Status.PENDING, self.teacher),
         )
         self.assertFalse(Printer.objects.exists())
 
@@ -265,21 +323,144 @@ class PrintersPageTests(PrinterTestBase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, Status.ADDING)
 
-    def test_teacher_sets_filaments(self):
-        printer = Printer.objects.create(
-            name='X1C', bambuddy_printer_id=1, printer_model=self.x1c_model,
-        )
-        self.client.force_login(self.student)
-        url = reverse('printer-filaments', args=[printer.pk])
-        data = {f'printer-{printer.pk}-slot_1': self.pla_black.pk}
-        self.assertEqual(self.client.post(url, data).status_code, 403)
+    def test_grid_shows_each_printers_state_and_templates(self):
+        fine = SlicerTemplate.objects.create(name='Fine', file=template_3mf())
+        ready = self.make_printer('Ready one', 1, templates=[self.template, fine])
+        Printer.objects.create(name='Bare one', bambuddy_printer_id=2, serial_number='01P00A000000007')
+        self.make_printer('Old one', 3, is_active=False)
         self.client.force_login(self.teacher)
-        self.assertRedirects(self.client.post(url, data), reverse('printers'))
-        self.assertEqual(
-            list(printer.filament_slots.values_list('slot', 'filament__color')), [(1, 'Black')],
-        )
         response = self.client.get(reverse('printers'))
-        self.assertContains(response, f'value="{self.pla_black.pk}" selected')
+        for text in (
+            'Ready one', 'Bare one', 'Old one', '01P00A000000007',
+            'Needs a template', 'Not in use', 'Ready</span>',
+            'Standard <span class="cell-sub">(default)</span>',
+            reverse('printer-detail', args=[ready.pk]),
+            # The library table.
+            PROJECT_SETTINGS['printer_settings_id'], PROJECT_SETTINGS['print_settings_id'],
+            reverse('template-download', args=[fine.pk]),
+            reverse('template-upload'),
+        ):
+            self.assertContains(response, text)
+
+    def test_page_query_count_does_not_grow_with_printers(self):
+        self.client.force_login(self.teacher)
+        self.make_printer('One', 1)
+        with self.assertNumQueries(FuzzyInt(1, 30)) as few:
+            self.client.get(reverse('printers'))
+        for number in range(2, 8):
+            self.make_printer(f'Printer {number}', number)
+        with self.assertNumQueries(len(few.captured_queries)):
+            self.client.get(reverse('printers'))
+
+
+class FuzzyInt(int):
+    """An int equal to anything in [lowest, highest], for assertNumQueries
+    when only "not many" matters."""
+
+    def __new__(cls, lowest, highest):
+        obj = super().__new__(cls, highest)
+        obj.lowest, obj.highest = lowest, highest
+        return obj
+
+    def __eq__(self, other):
+        return self.lowest <= other <= self.highest
+
+    __hash__ = int.__hash__
+
+
+class PrinterDetailPageTests(PrinterTestBase):
+    def setUp(self):
+        self.printer = Printer.objects.create(name='X1C', bambuddy_printer_id=1)
+        self.url = reverse('printer-detail', args=[self.printer.pk])
+
+    def test_teachers_only(self):
+        self.assertRedirects(self.client.get(self.url), f'/login/?next={self.url}')
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.post(self.url, {'name': 'Hacked'}).status_code, 403)
+        self.printer.refresh_from_db()
+        self.assertEqual(self.printer.name, 'X1C')
+
+    def test_teacher_selects_templates_and_then_the_printer_is_offered_on_review(self):
+        self.client.force_login(self.teacher)
+        self.assertContains(self.client.get(self.url), 'Standard')
+        response = self.client.post(self.url, {
+            'name': 'X1C', 'is_active': 'on', 'templates': [self.template.pk],
+            'default_template': self.template.pk,
+        })
+        self.assertRedirects(response, reverse('printers'))
+        self.make_job()
+        self.assertContains(
+            self.client.get(reverse('job-review')),
+            f'value="{self.printer.pk}:{self.template.pk}"',
+        )
+
+    def test_invalid_post_is_shown_again(self):
+        Printer.objects.create(name='Taken', bambuddy_printer_id=2)
+        self.client.force_login(self.teacher)
+        response = self.client.post(self.url, {'name': 'Taken', 'is_active': 'on'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'already exists')
+        self.assertContains(response, '<h1>X1C</h1>')
+
+    def test_unknown_printer_is_404(self):
+        self.client.force_login(self.teacher)
+        self.assertEqual(self.client.get(reverse('printer-detail', args=[9999])).status_code, 404)
+
+
+class TemplateLibraryPageTests(PrinterTestBase):
+    def test_teachers_only(self):
+        urls = (
+            ('get', reverse('template-upload')),
+            ('get', reverse('template-download', args=[self.template.pk])),
+            ('post', reverse('template-delete', args=[self.template.pk])),
+        )
+        for method, url in urls:
+            self.assertEqual(getattr(self.client, method)(url).status_code, 302)
+        self.client.force_login(self.student)
+        for method, url in urls:
+            self.assertEqual(getattr(self.client, method)(url).status_code, 403)
+        self.assertTrue(SlicerTemplate.objects.filter(pk=self.template.pk).exists())
+
+    def test_upload(self):
+        printer = Printer.objects.create(name='X1C', bambuddy_printer_id=1)
+        self.client.force_login(self.teacher)
+        # Coming from a printer's page, that printer is ticked.
+        response = self.client.get(reverse('template-upload'), {'printer': printer.pk})
+        self.assertContains(response, f'value="{printer.pk}" id="id_printers_0" checked')
+        response = self.client.post(reverse('template-upload'), {
+            'name': 'PETG 0.2', 'file': template_3mf(), 'printers': [printer.pk],
+        })
+        self.assertRedirects(response, reverse('printers'))
+        template = SlicerTemplate.objects.get(name='PETG 0.2')
+        printer.refresh_from_db()
+        self.assertEqual((template.uploaded_by, printer.default_template), (self.teacher, template))
+
+    def test_upload_of_a_bad_file_shows_why(self):
+        self.client.force_login(self.teacher)
+        response = self.client.post(reverse('template-upload'), {
+            'name': 'Broken', 'file': SimpleUploadedFile('broken.3mf', b'nope'),
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'not a valid .3mf project file')
+        self.assertFalse(SlicerTemplate.objects.filter(name='Broken').exists())
+
+    def test_download_returns_the_file(self):
+        self.client.force_login(self.teacher)
+        response = self.client.get(reverse('template-download', args=[self.template.pk]))
+        self.assertIn('attachment', response['Content-Disposition'])
+        with self.template.file.open('rb') as stored:
+            self.assertEqual(b''.join(response.streaming_content), stored.read())
+
+    def test_delete(self):
+        self.client.force_login(self.teacher)
+        url = reverse('template-delete', args=[self.template.pk])
+        self.assertEqual(self.client.get(url).status_code, 405)
+        waiting = self.make_job(status=Job.Status.APPROVED, template=self.template)
+        self.assertContains(self.client.post(url, follow=True), 'waiting to be sliced')
+        waiting.delete()
+        self.assertContains(self.client.post(url, follow=True), 'deleted')
+        self.assertFalse(SlicerTemplate.objects.exists())
 
 
 @override_settings(BAMBUDDY_VIA_AGENT=True, AGENT_CLAIM_TIMEOUT=900)
@@ -339,9 +520,8 @@ class AgentPrinterTicketApiTests(PrinterTestBase):
         ticket.refresh_from_db()
         printer = Printer.objects.get()
         self.assertEqual(
-            (printer.name, printer.bambuddy_printer_id, printer.serial_number,
-             printer.printer_model, printer.is_active),
-            ('Lab X1C', 7, '01P00A000000002', self.x1c_model, True),
+            (printer.name, printer.bambuddy_printer_id, printer.serial_number, printer.is_active),
+            ('Lab X1C', 7, '01P00A000000002', True),
         )
         self.assertEqual(
             (ticket.status, ticket.printer, ticket.bambuddy_printer_id, ticket.access_code),
@@ -361,16 +541,20 @@ class AgentPrinterTicketApiTests(PrinterTestBase):
             self.assertEqual(response.status_code, 400)
         self.assertFalse(Printer.objects.exists())
 
-    def test_new_printer_is_usable_on_review_and_by_a_scoped_agent(self):
+    def test_new_printer_is_in_a_scoped_agents_printers_and_needs_a_template(self):
         old = Printer.objects.create(name='Old', bambuddy_printer_id=1)
         self.agent.printers.add(old)
         ticket = self.ticket(status=Status.ADDING, agent=self.agent)
         self.api('post', f'printer-tickets/{ticket.id}/done/', {'bambuddy_printer_id': 7})
         printer = Printer.objects.get(name='Lab X1C')
         self.assertIn(printer, self.agent.printers.all())
+        # It has no template yet, so it is not offered on /review/ ...
         self.client.force_login(self.teacher)
         self.make_job(status=Job.Status.PENDING)
-        self.assertContains(self.client.get(reverse('job-review')), 'Lab X1C')
+        self.assertNotContains(self.client.get(reverse('job-review')), 'Lab X1C')
+        # ... until a teacher gives it one.
+        printer.offer_template(self.template)
+        self.assertContains(self.client.get(reverse('job-review')), 'Lab X1C: Standard')
 
     def test_done_fails_the_ticket_if_the_printer_is_already_here(self):
         Printer.objects.create(name='Existing', bambuddy_printer_id=7)
@@ -436,11 +620,11 @@ class AgentPrinterTicketApiTests(PrinterTestBase):
         self.assertEqual(self.api('post', f'printer-tickets/{ticket.id}/claim/').status_code, 404)
 
 
-class TemplateMigrationTests(TransactionTestCase):
-    """0009 moves slicing to template paths and stops using the preset path
-    columns, which stay in the database for a rolled-back release."""
-    BEFORE = [('jobs', '0008_convert_printer_presets')]
-    AFTER = [('jobs', '0009_slicer_templates')]
+class TemplateLibraryMigrationTests(TransactionTestCase):
+    """0010 deletes printer models and filaments and adds the template
+    library; printers and their jobs are kept, with no template."""
+    BEFORE = [('jobs', '0009_slicer_templates')]
+    AFTER = [('jobs', '0010_slicer_template_library')]
 
     def migrate(self, target):
         executor = MigrationExecutor(connection)
@@ -451,37 +635,46 @@ class TemplateMigrationTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
 
-    def test_old_columns_are_kept_and_new_rows_still_save(self):
+    def test_printers_survive_and_the_old_tables_and_columns_go(self):
         apps = self.migrate(self.BEFORE)
-        apps.get_model('jobs', 'PrinterModel').objects.create(
-            name='Old', settings_path='/orca/m.json;/orca/p.json',
+        model = apps.get_model('jobs', 'PrinterModel').objects.create(
+            name='X1 Carbon 0.4', template_path='/home/pi/x1c.3mf',
         )
-        apps.get_model('jobs', 'Filament').objects.create(
-            filament_type='PLA', color='Black', preset_path='/orca/pla.json',
+        filament = apps.get_model('jobs', 'Filament').objects.create(
+            filament_type='PLA', color='Black',
+        )
+        old = apps.get_model('jobs', 'Printer').objects.create(
+            name='X1C', bambuddy_printer_id=4, serial_number='01P00A000000002',
+            printer_model=model, template_path='/home/pi/own.3mf',
+        )
+        apps.get_model('jobs', 'PrinterFilament').objects.create(
+            printer=old, filament=filament, slot=1,
         )
 
         self.migrate(self.AFTER)
-        # The current models know nothing of the old columns...
-        model = PrinterModel.objects.create(name='New')
-        self.assertEqual(PrinterModel.objects.get(name='Old').template_path, '')
-        Filament.objects.create(filament_type='PETG', color='White')
-        Printer.objects.create(name='X1C', bambuddy_printer_id=1, printer_model=model)
-        self.assertEqual(Printer.objects.get().template_path, '')
-        # ...but the columns and their old values are still there for a
-        # release rolled back to before this migration, and new rows get ''.
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT name, settings_path FROM jobs_printermodel ORDER BY name')
-            self.assertEqual(
-                cursor.fetchall(), [('New', ''), ('Old', '/orca/m.json;/orca/p.json')],
-            )
-            cursor.execute('SELECT color, preset_path FROM jobs_filament ORDER BY color')
-            self.assertEqual(cursor.fetchall(), [('Black', '/orca/pla.json'), ('White', '')])
-
-        apps = self.migrate(self.BEFORE)
+        printer = Printer.objects.get()
         self.assertEqual(
-            apps.get_model('jobs', 'PrinterModel').objects.get(name='Old').settings_path,
-            '/orca/m.json;/orca/p.json',
+            (printer.name, printer.bambuddy_printer_id, printer.serial_number, printer.is_active),
+            ('X1C', 4, '01P00A000000002', True),
         )
+        self.assertIsNone(printer.default_template)
+        self.assertFalse(printer.templates.exists())
+        self.assertFalse(Printer.objects.approvable().exists())
+        with connection.cursor() as cursor:
+            tables = set(connection.introspection.table_names(cursor))
+            columns = {
+                column.name
+                for column in connection.introspection.get_table_description(cursor, 'jobs_printer')
+            }
+        self.assertFalse(tables & {'jobs_printermodel', 'jobs_filament', 'jobs_printerfilament'})
+        self.assertIn('jobs_slicertemplate', tables)
+        self.assertFalse(columns & {
+            'printer_model_id', 'template_path', 'slicer_settings', 'slicer_filaments',
+        })
+
+        # Reversible (for development; a real rollback restores the backup).
+        apps = self.migrate(self.BEFORE)
+        self.assertEqual(apps.get_model('jobs', 'Printer').objects.get().name, 'X1C')
 
 
 @skipIf(

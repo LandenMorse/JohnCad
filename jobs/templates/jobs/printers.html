@@ -4,7 +4,7 @@
 {% block head %}{% if auto_refresh %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
 {% block content %}
 <h1>Printers</h1>
-<p class="subtitle">Add a printer, see how earlier requests went, and set which filament is loaded.</p>
+<p class="subtitle">Manage each printer and the slicer templates that can be used on it.</p>
 
 {% if not via_agent %}
 <div class="card">
@@ -15,6 +15,74 @@
     <p class="error-detail">No print agent is set up yet, so requests made here will wait. An admin can add one in /admin/.</p>
 </div>
 {% endif %}
+
+<div class="printer-grid">
+    {% for printer in printers %}
+    <article class="card printer-card">
+        <header class="printer-card-head">
+            <h3>{{ printer.name }}</h3>
+            {% if not printer.is_active %}<span class="status-badge">Not in use</span>
+            {% elif not printer.templates.all %}<span class="status-badge status-rejected">Needs a template</span>
+            {% else %}<span class="status-badge status-finished">Ready</span>{% endif %}
+        </header>
+        <dl class="printer-facts">
+            <dt>Serial</dt><dd>{{ printer.serial_number|default:"—" }}</dd>
+            <dt>Bambuddy id</dt><dd>{{ printer.bambuddy_printer_id }}</dd>
+        </dl>
+        <div class="printer-templates">
+            <div class="stat-label">Templates</div>
+            <ul>
+                {% for template in printer.templates.all %}
+                <li>{{ template.name }}{% if template.pk == printer.default_template_id %} <span class="cell-sub">(default)</span>{% endif %}</li>
+                {% empty %}
+                <li class="cell-sub">None yet. Jobs can't be approved for this printer until it has one.</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <a class="btn" href="{% url 'printer-detail' printer.pk %}">Manage</a>
+    </article>
+    {% empty %}
+    <div class="card"><p class="subtitle">No printers yet. Add one below.</p></div>
+    {% endfor %}
+</div>
+
+<h2>Slicer templates</h2>
+<div class="card">
+    <p class="subtitle">A template is an OrcaSlicer project (.3mf) holding the printer, filament and process settings. Each job is sliced into the template chosen when it is approved.</p>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr><th>Template</th><th>Settings in the file</th><th>Used on</th><th>Uploaded</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for template in templates %}
+            <tr>
+                <td>
+                    {{ template.name }}
+                    <a href="{% url 'template-download' template.pk %}">Download file</a>
+                </td>
+                <td>
+                    {{ template.machine_preset|default:"—" }}
+                    {% if template.process_preset %}<div class="cell-sub">{{ template.process_preset }}</div>{% endif %}
+                    {% if template.filament_presets %}<div class="cell-sub">{{ template.filament_presets|join:", " }}</div>{% endif %}
+                </td>
+                <td>{% for printer in template.printers.all %}{{ printer.name }}{% if not forloop.last %}, {% endif %}{% empty %}<span class="cell-sub">No printer</span>{% endfor %}</td>
+                <td>{{ template.uploaded_at|date:"M j, Y" }}{% if template.uploaded_by %}<div class="cell-sub">by {{ template.uploaded_by.username }}</div>{% endif %}</td>
+                <td>
+                    <form method="post" action="{% url 'template-delete' template.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% empty %}
+            <tr class="empty-row"><td colspan="5">No templates yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <a class="btn card-action" href="{% url 'template-upload' %}">Upload a template</a>
+</div>
 
 <h2>Add a printer</h2>
 <div class="card">
@@ -31,13 +99,12 @@
     <div class="table-wrap">
     <table>
         <thead>
-            <tr><th>Printer</th><th>Model</th><th>IP address</th><th>Serial number</th><th>Requested</th><th>Status</th><th></th></tr>
+            <tr><th>Printer</th><th>IP address</th><th>Serial number</th><th>Requested</th><th>Status</th><th></th></tr>
         </thead>
         <tbody>
             {% for ticket in tickets %}
             <tr>
                 <td>{{ ticket.name }}</td>
-                <td>{{ ticket.printer_model.name }}</td>
                 <td>{{ ticket.ip_address }}</td>
                 <td>{{ ticket.serial_number }}</td>
                 <td>{{ ticket.created_at|date:"M j, H:i" }}{% if ticket.requested_by %} by {{ ticket.requested_by.username }}{% endif %}</td>
@@ -55,41 +122,11 @@
                 </td>
             </tr>
             {% empty %}
-            <tr class="empty-row"><td colspan="7">No printers have been requested yet.</td></tr>
+            <tr class="empty-row"><td colspan="6">No printers have been requested yet.</td></tr>
             {% endfor %}
         </tbody>
     </table>
     </div>
     {% if auto_refresh %}<p class="subtitle">This page refreshes by itself while a request is in progress.</p>{% endif %}
-</div>
-
-<h2>Printers</h2>
-<div class="card">
-    <div class="table-wrap">
-    <table>
-        <thead>
-            <tr><th>Printer</th><th>Model</th><th>Filament in each slot</th></tr>
-        </thead>
-        <tbody>
-            {% for printer in printers %}
-            <tr>
-                <td>{{ printer.name }}{% if not printer.is_active %} <span class="status-badge">Not in use</span>{% endif %}</td>
-                <td>{{ printer.printer_model.name|default:"—" }}</td>
-                <td>
-                    <form method="post" action="{% url 'printer-filaments' printer.pk %}" class="filament-form">
-                        {% csrf_token %}
-                        {% for field in printer.filaments_form %}
-                        <label>{{ field.label }} {{ field }}</label>
-                        {% endfor %}
-                        <button type="submit">Save</button>
-                    </form>
-                </td>
-            </tr>
-            {% empty %}
-            <tr class="empty-row"><td colspan="3">No printers yet. Add one above.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
 </div>
 {% endblock %}

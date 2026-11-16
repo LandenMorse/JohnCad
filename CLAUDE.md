@@ -33,43 +33,63 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
 - `Attachment` model (`attachments/models.py`): a Student's uploaded `.stl`
   file, `FileField`-backed, stored under `MEDIA_ROOT` (private — never
   mounted at a public URL, only reachable through authenticated views).
-- `PrinterModel` (name, `template_path`: the slicer template `.3mf` for that
-  kind of printer, blank = `ORCA_SLICER_TEMPLATE`) and `Filament`
-  (`filament_type`, `color`; type+color unique; informational) are added by
-  hand in `/admin/`; no teacher forms for them.
+- **Slicer templates** replace printer models, filaments and every preset
+  path/`.env` slicer setting (migration 0010 deleted `PrinterModel`, `Filament`
+  and `PrinterFilament`). `SlicerTemplate` (`jobs/models.py`): `name` (unique),
+  `file` (an OrcaSlicer project `.3mf` in `MEDIA_ROOT/slicer_templates/`, so
+  the Flatpak grant and the backups already cover it), the preset names read
+  from it at upload (`machine_preset`, `process_preset`, `filament_presets`;
+  display only), `uploaded_by`, `uploaded_at`. `jobs/threemf.py` (no model
+  imports) validates the upload: a zip with `Metadata/project_settings.config`
+  (JSON object), at most 50 MB; it is the model field's validator, so forms
+  and the admin share it. The file is never replaced after upload (read-only
+  in the admin): upload a new template instead.
 - `Printer` model (`jobs/models.py`): name, Bambuddy printer id,
-  `serial_number`, `printer_model` FK (nullable only for legacy printers), an
-  `is_active` flag, and up to 4 loaded filaments through `PrinterFilament`
-  (printer, filament, `slot` 1-4, unique per printer+slot). The old
-  `slicer_settings`/`slicer_filaments` text columns were converted by
-  migration 0008, and `PrinterModel.settings_path` / `Filament.preset_path`
-  were retired by migration 0009 (slicing uses templates now). All four are
-  removed from the models **but not yet dropped from the database** (they have
-  a db default of `''`), so a rolled-back release still works; drop them in a
-  later release. `Printer.template_path` (blank by default) overrides its
-  model's template. A teacher picks a printer on `/review/` when approving
-  (required once any active printer exists); it sets `Job.printer` (nullable,
-  `PROTECT`). The printer decides the slicer template (`jobs/slicing.py`
-  `template_for`: the printer's own `template_path`, else its model's, else
-  `ORCA_SLICER_TEMPLATE`), the Bambuddy printer the job is enqueued on, and which
-  "Plate cleared, release next" button (one per printer on `/queue/`) starts
-  it. Jobs with no printer (older jobs, or no printers set up) use the
-  `.env` settings, so single-printer setups keep working.
-- **Adding printers** (`/printers/`, staff only; `jobs/views.py`,
-  `jobs/forms.py`, state changes in `jobs/printer_tickets.py`): the form
-  creates an `AddPrinterTicket` (name, IP, access code, serial, printer model
-  FK; `pending -> adding -> succeeded/failed`, or `cancelled`). The agent gets
+  `serial_number`, `is_active`, `templates` (M2M to `SlicerTemplate`: the ones
+  teachers may choose for it) and `default_template` (FK, `SET_NULL`). The
+  library is shared, so one upload serves every printer of a kind. Change the
+  two together through `Printer.set_templates()` / `offer_template()`, which
+  keep the default one of the offered templates.
+  `Printer.objects.approvable()` = in use and has a template; only those can
+  be chosen for a job.
+- **Approving** (`/review/`): one dropdown lists each approvable printer's
+  templates and posts `target=<printer id>:<template id>`
+  (`JobApprovalForm`); `services.approve_job(job, printer, template)` sets
+  `Job.printer` (`PROTECT`) and `Job.template` (`SET_NULL`) and refuses a
+  template the printer does not offer. Called without a template (the admin
+  bulk action) it keeps the job's template for that printer, else the
+  printer's default. **There is no fallback**: no printer or no template
+  means the job can't be approved, and a job that reaches the slicer without
+  a template fails with a clear `slicing_error`. The printer also decides the
+  Bambuddy printer the job is enqueued on and which "Plate cleared, release
+  next" button (one per printer on `/queue/`) starts it. Jobs with no printer
+  only exist from before printers did; the agent still handles those.
+- **Printers page** (`/printers/`, staff only; `jobs/views.py`,
+  `jobs/forms.py`): a grid of printer cards (Ready / Not in use / Needs a
+  template, serial, templates with the default marked), the template library
+  table (presets, which printers use it, download, delete) and the add-printer
+  form with its requests table. `/printers/<id>/` (`PrinterForm`) renames a
+  printer, takes it out of use and ticks its templates and default.
+  `/printers/templates/upload/` (`SlicerTemplateForm`; `?printer=<id>`
+  pre-ticks one) uploads a template and offers it on the ticked printers.
+  `services.delete_template()` refuses while an approved job is still waiting
+  to be sliced with it, then deletes the row and the file.
+- **Adding printers** (same page; state changes in
+  `jobs/printer_tickets.py`): the form
+  creates an `AddPrinterTicket` (name, IP, access code, serial;
+  `pending -> adding -> succeeded/failed`, or `cancelled`). The agent gets
   open tickets in `poll/` (`printer_tickets`), claims one
   (`printer-tickets/<id>/claim/`), looks the serial up in Bambuddy (so a
   retry never adds twice), `POST`s the printer, waits for
   `GET /printers/<id>/status` `connected` (default 60s,
   `AGENT_PRINTER_CONNECT_TIMEOUT`; deletes the printer it just created if it
   never connects), and reports `done` (`bambuddy_printer_id`) or `failed`
-  through its on-disk outbox. `complete()` creates the `Printer`, links it to
+  through its on-disk outbox. `complete()` creates the `Printer` (with no
+  template yet), links it to
   the ticket and adds it to the agent's printer scope if the agent has one.
   The access code is only sent to an authenticated agent and is blanked when
   the ticket closes; it is never rendered. Stale claims are re-offered after
-  `AGENT_CLAIM_TIMEOUT`. The page also has per-printer filament slot pickers.
+  `AGENT_CLAIM_TIMEOUT`.
   Agent side tested against a fake Bambuddy; **the Bambuddy printer endpoints
   are from the API reference and not yet run against a live Bambuddy.**
 - `Job` model (`jobs/models.py`): one specific request to print a
@@ -117,16 +137,16 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
   (renamed from `gcode` in migration 0004). OrcaSlicer is a **Flatpak on the site Pi**
   (`ORCA_SLICER_CMD`, default `flatpak run com.orcaslicer.OrcaSlicer`) and
   runs on the host, which is why the site is not run in Docker. Config via settings/env:
-  `ORCA_SLICER_TEMPLATE` (default `~/Documents/Perfect_Circle.3mf`; `~` and
-  `$HOME` expanded), `ORCA_SLICER_DATADIR`, `ORCA_SLICER_TIMEOUT` (300s). The
+  `ORCA_SLICER_DATADIR`, `ORCA_SLICER_TIMEOUT` (300s); the template is
+  `job.template.file` (`template_path_for`), never a setting. The
   command is `<cmd> --arrange 1 --slice 0 --export-3mf <scratch>/output.gcode.3mf
   [--datadir D] <template.3mf> <stl>`: the template supplies machine, process
   and filament settings (no `--load-settings`/`--load-filaments`), the stl is
   added to it and arranged. Scratch output goes in
   `MEDIA_ROOT/slicing_tmp` (not `/tmp`) because the Flatpak sandbox has a
   private `/tmp`; the sandbox needs `flatpak override --filesystem=` for
-  `MEDIA_ROOT` and the template's folder. Raises `SlicerNotConfigured` if no
-  template is set, the template file is missing, or the command isn't found, `SlicingFailed` (with captured
+  `MEDIA_ROOT` only (templates live there too). Raises `SlicerNotConfigured` if
+  the job has no template, the template file is missing, or the command isn't found, `SlicingFailed` (with captured
   stderr) on non-zero exit/timeout/no `.3mf` output — both caught by the
   slice worker and stored in `slicing_error`. In production use.
 - Public **`/queue/`** page (`jobs` app; any logged-in Student, not just
@@ -224,7 +244,10 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
   `docs/operations.md`.
 - **Migrations must keep the previous release working** (rollback is a code
   checkout, never a schema rollback): see `CONTRIBUTING.md`, "Database
-  migrations".
+  migrations". **Migration 0010 is a deliberate exception** (the owner chose
+  to drop the old tables and columns at once): code from before it does not
+  run against a database migrated past it, so going back means restoring the
+  backup `update.sh` takes. Say so in the pull request and release notes.
 - The scripts are **not yet run on a real Raspberry Pi** from scratch (the
   production Pis predate them); CI covers Ubuntu x86 without the OrcaSlicer
   Flatpak, Caddy or the printer Pi.
@@ -246,15 +269,21 @@ self-hosted **Bambuddy**. Django never talks to printers or to Bambuddy.
 - Run an add-printer ticket end to end against the real Bambuddy on the
   printer Pi (endpoint paths, the POST response, and which API key permission
   adding printers needs are from the docs only).
-- Drop the unused `jobs_printer.slicer_settings` / `slicer_filaments`,
-  `jobs_printermodel.settings_path` and `jobs_filament.preset_path` columns in
-  a later release (see migrations 0008 and 0009).
-- Existing printer models have a blank template after migration 0009, so they
-  all slice with `ORCA_SLICER_TEMPLATE` until a template is set in `/admin/`.
-  `ORCA_SLICER_SETTINGS`/`ORCA_SLICER_FILAMENTS` in an old `.env` are ignored.
+- After migration 0010 every existing printer has no template and can't be
+  chosen until a teacher uploads one on `/printers/`; jobs approved but not
+  yet sliced at that moment fail with "No slicer template was chosen" and need
+  a Retry. `ORCA_SLICER_TEMPLATE` / `ORCA_SLICER_SETTINGS` /
+  `ORCA_SLICER_FILAMENTS` in an old `.env` are ignored.
 - Template slicing (`--arrange 1`, template before the stl) has not been run
-  on the real site Pi yet; check one job end to end.
-- No teacher-facing way to rename, deactivate or remove a printer (admin only).
+  on the real site Pi yet; check one job end to end. The preset names read
+  from a template (`printer_settings_id`, `print_settings_id`,
+  `filament_settings_id` in `Metadata/project_settings.config`) have not been
+  checked against a real OrcaSlicer project file either.
+- Migration 0010 was only run on SQLite locally; CI runs it (and its test,
+  `TemplateLibraryMigrationTests`) on Postgres.
+- No teacher-facing way to delete a printer (rename and "not in use" are on
+  `/printers/<id>/`; delete is admin only, and blocked while it has jobs), or
+  to rename a template or see which jobs used it.
 
 - "Any X1C"-style automatic printer choice: teachers pick the printer by
   hand on `/review/` for now.

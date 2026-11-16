@@ -2,13 +2,12 @@ import hashlib
 import secrets
 
 from django.conf import settings
-from django.core.validators import (
-    MaxValueValidator,
-    MinValueValidator,
-    RegexValidator,
-)
+from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator, RegexValidator
 from django.db import models
 from django.db.models import Q
+
+from .threemf import Presets, read_presets, validate_slicer_template
 
 
 def job_sliced_file_upload_path(instance, filename):
@@ -19,21 +18,46 @@ def job_sliced_file_upload_path(instance, filename):
 job_gcode_upload_path = job_sliced_file_upload_path
 
 
-class PrinterModel(models.Model):
-    """A kind of printer (e.g. "Bambu Lab X1 Carbon, 0.4 nozzle") and the
-    OrcaSlicer template that slices for it. Every Printer of that kind points
-    here, so the template path is entered once. Managed in /admin/."""
-    name = models.CharField(max_length=100, unique=True)
-    template_path = models.CharField(
-        max_length=1000,
-        blank=True,
+class SlicerTemplate(models.Model):
+    """An OrcaSlicer project (.3mf) that jobs are sliced into.
+
+    The project holds the machine, process and filament settings, so a
+    template is everything the slicer needs to know about how to print: the
+    uploaded .stl is added to it and arranged on its plate. Teachers upload
+    templates on /printers/ and say which printers each one is for; the
+    teacher approving a job picks one of the printer's templates.
+
+    The file is never replaced once uploaded (upload a new template instead),
+    so the presets read from it at upload stay true.
+    """
+    name = models.CharField(
+        max_length=100, unique=True,
+        help_text='What teachers see when choosing, e.g. "X1C PLA 0.2mm".',
+    )
+    file = models.FileField(
+        'project file',
+        upload_to='slicer_templates/',
+        validators=[FileExtensionValidator(allowed_extensions=['3mf']), validate_slicer_template],
         help_text=(
-            'Path on the site Pi of the OrcaSlicer .3mf project used as the '
-            'template for this kind of printer (it holds the machine, process '
-            'and filament settings). Blank = ORCA_SLICER_TEMPLATE from .env. '
-            'A single printer can use its own template instead.'
+            'An OrcaSlicer project saved with File > Save Project As. Anything '
+            'left on its plate is printed with every job, so save it with an '
+            'empty plate.'
         ),
     )
+    # Read from the file when it is uploaded; shown to teachers so they can
+    # tell templates apart.
+    machine_preset = models.CharField(max_length=255, blank=True, editable=False)
+    process_preset = models.CharField(max_length=255, blank=True, editable=False)
+    filament_presets = models.JSONField(default=list, blank=True, editable=False)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        editable=False,
+        related_name='slicer_templates',
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['name']
@@ -41,70 +65,61 @@ class PrinterModel(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.file:
+            try:
+                presets = read_presets(self.file)
+            except ValidationError:
+                # Validation is the field validator's job (forms run it);
+                # a file that can't be read just has no presets to show.
+                presets = Presets()
+            self.machine_preset = presets.machine
+            self.process_preset = presets.process
+            self.filament_presets = list(presets.filaments)
+        super().save(*args, **kwargs)
 
-class Filament(models.Model):
-    """A filament teachers can say is loaded in a printer. It is for display
-    and choosing; the slicer template decides the filament settings.
-    Managed in /admin/."""
-    filament_type = models.CharField(
-        'type', max_length=50, help_text='The material, e.g. PLA, PETG, TPU.',
-    )
-    color = models.CharField(max_length=50, help_text='e.g. Black, Jade White.')
 
-    class Meta:
-        ordering = ['filament_type', 'color']
-        constraints = [
-            models.UniqueConstraint(
-                fields=['filament_type', 'color'], name='unique_filament_type_color',
-            ),
-        ]
-
-    def __str__(self):
-        return f'{self.filament_type} {self.color}'
+class PrinterQuerySet(models.QuerySet):
+    def approvable(self):
+        """Printers a job can be approved for: in use, with a template."""
+        return self.filter(is_active=True, templates__isnull=False).distinct()
 
 
 class Printer(models.Model):
     """A physical printer a teacher can send a job to.
 
     Its IP address and access code live in Bambuddy, not here; this row links
-    JohnCad's name for the printer to Bambuddy's printer id, and says what the
-    slicer needs to know: which PrinterModel it is (and so which template) and
-    which Filament is loaded in each slot. Teachers add printers on /printers/ (an AddPrinterTicket,
-    carried out by the print agent).
+    JohnCad's name for the printer to Bambuddy's printer id, and says which
+    slicer templates can be used on it. Teachers add printers on /printers/
+    (an AddPrinterTicket, carried out by the print agent) and manage them
+    there.
     """
-    MAX_FILAMENT_SLOTS = 4
-
     name = models.CharField(max_length=100, unique=True)
     bambuddy_printer_id = models.PositiveIntegerField(
         help_text="Bambuddy's id for this printer (GET /api/v1/printers/ on Bambuddy).",
     )
     serial_number = models.CharField(max_length=32, blank=True)
-    # Null only for printers from before PrinterModel existed; those slice with
-    # ORCA_SLICER_TEMPLATE from .env (unless they have their own template).
-    printer_model = models.ForeignKey(
-        PrinterModel,
-        on_delete=models.PROTECT,
-        null=True,
+    templates = models.ManyToManyField(
+        SlicerTemplate,
         blank=True,
         related_name='printers',
-        help_text='Decides the slicer template, unless this printer has its own.',
+        help_text='The slicer templates teachers can choose for this printer.',
     )
-    template_path = models.CharField(
-        max_length=1000,
+    default_template = models.ForeignKey(
+        SlicerTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
         blank=True,
-        help_text=(
-            'Path on the site Pi of an OrcaSlicer .3mf template for this '
-            "printer only. Blank = its printer model's template, or "
-            'ORCA_SLICER_TEMPLATE from .env.'
-        ),
-    )
-    filaments = models.ManyToManyField(
-        Filament, through='PrinterFilament', related_name='printers', blank=True,
+        related_name='default_for',
+        help_text='The template offered first when approving a job for this printer.',
     )
     is_active = models.BooleanField(
+        'in use',
         default=True,
         help_text='Untick to stop offering this printer to teachers (keeps job history).',
     )
+
+    objects = PrinterQuerySet.as_manager()
 
     class Meta:
         ordering = ['name']
@@ -112,27 +127,21 @@ class Printer(models.Model):
     def __str__(self):
         return self.name
 
+    def offer_template(self, template):
+        """Let teachers choose `template` for this printer; it becomes the
+        default if the printer has none."""
+        self.templates.add(template)
+        if self.default_template_id is None:
+            self.default_template = template
+            self.save(update_fields=['default_template'])
 
-class PrinterFilament(models.Model):
-    """Which Filament is loaded in one slot (1-4) of a Printer. The slot order
-    is the order OrcaSlicer is given the filament presets in."""
-    printer = models.ForeignKey(Printer, on_delete=models.CASCADE, related_name='filament_slots')
-    filament = models.ForeignKey(Filament, on_delete=models.PROTECT, related_name='printer_slots')
-    slot = models.PositiveSmallIntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(Printer.MAX_FILAMENT_SLOTS)],
-    )
-
-    class Meta:
-        ordering = ['printer', 'slot']
-        constraints = [
-            models.UniqueConstraint(fields=['printer', 'slot'], name='unique_printer_filament_slot'),
-            models.CheckConstraint(
-                condition=Q(slot__gte=1) & Q(slot__lte=4), name='printer_filament_slot_1_to_4',
-            ),
-        ]
-
-    def __str__(self):
-        return f'{self.printer} slot {self.slot}: {self.filament}'
+    def set_templates(self, templates, default=None):
+        """Replace the templates offered for this printer. `default` is kept
+        only if it is one of them; otherwise the first one is the default."""
+        templates = list(templates)
+        self.templates.set(templates)
+        self.default_template = default if default in templates else next(iter(templates), None)
+        self.save(update_fields=['default_template'])
 
 
 class Job(models.Model):
@@ -165,12 +174,22 @@ class Job(models.Model):
         blank=True,
         related_name='jobs',
     )
-    # Chosen by the teacher when approving; decides the slicer presets and which
-    # Bambuddy printer the job goes to. Null for jobs made before printers
-    # existed, or when no printers are set up (then the .env settings apply).
+    # Both chosen by the teacher when approving. The printer decides which
+    # Bambuddy printer the job goes to; the template (one of that printer's)
+    # is what the job is sliced into. Null until approved, and on jobs from
+    # before printers or templates existed.
     printer = models.ForeignKey(
         Printer,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='jobs',
+    )
+    # SET_NULL: a template can be deleted once nothing is waiting to be sliced
+    # with it (services.delete_template); the print history stays.
+    template = models.ForeignKey(
+        SlicerTemplate,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='jobs',
@@ -361,9 +380,6 @@ class AddPrinterTicket(models.Model):
         max_length=32,
         validators=[RegexValidator(r'^[A-Z0-9]{10,32}$', 'The serial number is letters and digits only.')],
         help_text="On the printer's screen (Settings > Device) or the label on its back.",
-    )
-    printer_model = models.ForeignKey(
-        PrinterModel, on_delete=models.PROTECT, related_name='tickets',
     )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     error = models.TextField(blank=True)

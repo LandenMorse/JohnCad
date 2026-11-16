@@ -1,7 +1,7 @@
 from django import forms
 from django.db import transaction
 
-from .models import AddPrinterTicket, Filament, Printer, PrinterFilament
+from .models import AddPrinterTicket, Printer, SlicerTemplate
 
 
 class SerialNumberField(forms.CharField):
@@ -15,7 +15,7 @@ class SerialNumberField(forms.CharField):
 class AddPrinterTicketForm(forms.ModelForm):
     class Meta:
         model = AddPrinterTicket
-        fields = ['name', 'printer_model', 'ip_address', 'access_code', 'serial_number']
+        fields = ['name', 'ip_address', 'access_code', 'serial_number']
         field_classes = {'serial_number': SerialNumberField}
         widgets = {
             # Shown as typed: teachers copy it off the printer's screen.
@@ -27,7 +27,6 @@ class AddPrinterTicketForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         # The model allows a blank code because closed tickets blank theirs.
         self.fields['access_code'].required = True
-        self.fields['printer_model'].empty_label = 'Choose a model'
 
     def _open_tickets(self):
         return AddPrinterTicket.objects.filter(status__in=AddPrinterTicket.OPEN_STATUSES)
@@ -49,27 +48,90 @@ class AddPrinterTicketForm(forms.ModelForm):
         return serial
 
 
-class PrinterFilamentsForm(forms.Form):
-    """Which filament is loaded in each of a printer's slots."""
+class PrinterForm(forms.ModelForm):
+    """A teacher's settings for one printer: its name, whether it is in use,
+    and which slicer templates can be chosen for it."""
 
-    def __init__(self, *args, printer, **kwargs):
+    class Meta:
+        model = Printer
+        fields = ['name', 'is_active', 'templates', 'default_template']
+        widgets = {'templates': forms.CheckboxSelectMultiple}
+
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.printer = printer
-        loaded = {slot.slot: slot.filament_id for slot in printer.filament_slots.all()}
-        for slot in range(1, Printer.MAX_FILAMENT_SLOTS + 1):
-            self.fields[f'slot_{slot}'] = forms.ModelChoiceField(
-                queryset=Filament.objects.all(),
-                required=False,
-                empty_label='Empty',
-                label=f'Slot {slot}',
-                initial=loaded.get(slot),
-            )
+        self.fields['default_template'].empty_label = 'First one ticked'
+
+    def clean(self):
+        cleaned = super().clean()
+        default = cleaned.get('default_template')
+        if default is not None and default not in cleaned.get('templates', ()):
+            self.add_error('default_template', 'The default must be one of the ticked templates.')
+        return cleaned
 
     @transaction.atomic
     def save(self):
-        self.printer.filament_slots.all().delete()
-        PrinterFilament.objects.bulk_create([
-            PrinterFilament(printer=self.printer, filament=filament, slot=slot)
-            for slot in range(1, Printer.MAX_FILAMENT_SLOTS + 1)
-            if (filament := self.cleaned_data.get(f'slot_{slot}')) is not None
-        ])
+        # Not ModelForm.save(): set_templates keeps the default and the
+        # templates consistent in one place.
+        self.instance.save(update_fields=['name', 'is_active'])
+        self.instance.set_templates(
+            self.cleaned_data['templates'], self.cleaned_data['default_template'],
+        )
+        return self.instance
+
+
+class SlicerTemplateForm(forms.ModelForm):
+    """Upload a slicer template and say which printers it is for."""
+    printers = forms.ModelMultipleChoiceField(
+        queryset=Printer.objects.all(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label='Use on these printers',
+        help_text='You can change this later on each printer.',
+    )
+
+    class Meta:
+        model = SlicerTemplate
+        fields = ['name', 'file']
+        widgets = {'file': forms.FileInput(attrs={'accept': '.3mf'})}
+
+    def __init__(self, *args, uploaded_by=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.instance.uploaded_by = uploaded_by
+
+    @transaction.atomic
+    def save(self):
+        template = super().save()
+        for printer in self.cleaned_data['printers']:
+            printer.offer_template(template)
+        return template
+
+
+class JobApprovalForm(forms.Form):
+    """The teacher's choice when approving a job: one of a printer's
+    templates, posted as `<printer id>:<template id>` so a single dropdown
+    (see `approval_choices`) picks both."""
+    UNAVAILABLE = 'That printer or template is no longer available.'
+
+    target = forms.RegexField(
+        r'^\d+:\d+$',
+        error_messages={
+            'required': 'Choose a printer and template.',
+            'invalid': UNAVAILABLE,
+        },
+    )
+
+    @staticmethod
+    def approval_choices():
+        """The printers a job can be approved for, each with its templates
+        prefetched, for rendering the dropdown."""
+        return Printer.objects.approvable().prefetch_related('templates')
+
+    def clean_target(self):
+        printer_pk, template_pk = self.cleaned_data['target'].split(':')
+        printer = Printer.objects.approvable().filter(pk=printer_pk).first()
+        template = printer and printer.templates.filter(pk=template_pk).first()
+        if template is None:
+            raise forms.ValidationError(self.UNAVAILABLE)
+        self.cleaned_data['printer'] = printer
+        self.cleaned_data['template'] = template
+        return self.cleaned_data['target']

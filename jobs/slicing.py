@@ -1,4 +1,3 @@
-import os
 import shlex
 import subprocess
 import tempfile
@@ -23,26 +22,22 @@ class SlicingFailed(Exception):
 OUTPUT_NAME = 'output.gcode.3mf'
 
 
-def template_for(job):
-    """Path of the template .3mf to slice `job` into.
-
-    The job's printer's own template wins, then its printer model's, then
-    ORCA_SLICER_TEMPLATE. `~` and `$HOME` are expanded.
-    """
-    printer = job.printer
-    candidates = []
-    if printer is not None:
-        candidates.append(printer.template_path)
-        if printer.printer_model_id:
-            candidates.append(printer.printer_model.template_path)
-    candidates.append(settings.ORCA_SLICER_TEMPLATE)
-    for candidate in candidates:
-        if candidate and candidate.strip():
-            return os.path.expanduser(os.path.expandvars(candidate.strip()))
-    raise SlicerNotConfigured(
-        'No slicer template: set ORCA_SLICER_TEMPLATE in .env, or a template on '
-        'the printer or its printer model in /admin/.'
-    )
+def template_path_for(job):
+    """Path of the template .3mf to slice `job` into: the SlicerTemplate the
+    teacher chose when approving it."""
+    template = job.template
+    if template is None:
+        raise SlicerNotConfigured(
+            'No slicer template was chosen for this job (or it has since been '
+            'deleted). Retry it and choose a template.'
+        )
+    path = Path(template.file.path)
+    if not path.is_file():
+        raise SlicerNotConfigured(
+            f'The file of slicer template "{template.name}" is missing on the server '
+            f'({path}). Upload the template again on the Printers page.'
+        )
+    return str(path)
 
 
 def slice_to_3mf(job):
@@ -52,30 +47,25 @@ def slice_to_3mf(job):
 
     The command is
     `<ORCA_SLICER_CMD> --arrange 1 --slice 0 --export-3mf <output> <template.3mf> <stl>`:
-    the template .3mf supplies the machine, process and filament settings (see
-    `template_for`), the .stl is added to it and arranged on the plate.
+    the template .3mf (job.template, see `template_path_for`) supplies the
+    machine, process and filament settings, the .stl is added to it and
+    arranged on the plate.
 
     On success, advances job.status to Job.Status.QUEUED and saves -- the
     slice and dispatch workers rely on that contract.
 
     The .gcode.3mf is the file that is sent to Bambuddy (docs/bambuddy.md).
     """
-    template = template_for(job)
+    template = template_path_for(job)
     base_command = shlex.split(settings.ORCA_SLICER_CMD)
     if not base_command:
         raise SlicerNotConfigured('ORCA_SLICER_CMD is empty.')
-    if not Path(template).is_file():
-        printer = job.printer
-        where = f' for printer "{printer.name}"' if printer is not None else ''
-        raise SlicerNotConfigured(
-            f'Slicer template{where} not found: {template}. Fix the path in /admin/ '
-            '(printer or printer model) or ORCA_SLICER_TEMPLATE in .env.'
-        )
 
     stl_path = job.attachment.file.path
 
     # The scratch dir lives under MEDIA_ROOT, not the system temp dir: the
-    # Flatpak sandbox has a private /tmp but can be granted MEDIA_ROOT.
+    # Flatpak sandbox has a private /tmp but can be granted MEDIA_ROOT (which
+    # is also where the templates and the .stl files are).
     scratch_root = Path(settings.MEDIA_ROOT) / 'slicing_tmp'
     scratch_root.mkdir(parents=True, exist_ok=True)
 

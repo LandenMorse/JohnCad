@@ -1,14 +1,6 @@
 from django.contrib import admin, messages
 
-from .models import (
-    AddPrinterTicket,
-    Filament,
-    Job,
-    Printer,
-    PrinterAgent,
-    PrinterFilament,
-    PrinterModel,
-)
+from .models import AddPrinterTicket, Job, Printer, PrinterAgent, SlicerTemplate
 from .services import approve_job, reject_job
 
 
@@ -21,8 +13,8 @@ def approve_jobs(modeladmin, request, queryset):
     message = f'{approved} job(s) approved; the slice worker will slice and queue them.'
     if approved < candidates.count():
         message += (
-            ' Others were skipped: set a printer on the job first (or they '
-            'can no longer be approved).'
+            ' Others were skipped: set a printer with a default template on '
+            'the job first (or they can no longer be approved).'
         )
     modeladmin.message_user(request, message)
 
@@ -35,7 +27,7 @@ def reject_jobs(modeladmin, request, queryset):
 
 @admin.register(Job)
 class JobAdmin(admin.ModelAdmin):
-    list_display = ('id', 'attachment', 'user', 'printer', 'status', 'created_at', 'approved_at')
+    list_display = ('id', 'attachment', 'user', 'printer', 'template', 'status', 'created_at', 'approved_at')
     list_filter = ('status', 'printer')
     search_fields = ('attachment__name', 'user__username')
     readonly_fields = (
@@ -48,31 +40,31 @@ class JobAdmin(admin.ModelAdmin):
     actions = [approve_jobs, reject_jobs]
 
 
-@admin.register(PrinterModel)
-class PrinterModelAdmin(admin.ModelAdmin):
-    list_display = ('name', 'template_path')
-    search_fields = ('name',)
+@admin.register(SlicerTemplate)
+class SlicerTemplateAdmin(admin.ModelAdmin):
+    """Teachers manage templates on /printers/; this is the same library."""
+    list_display = ('name', 'machine_preset', 'process_preset', 'uploaded_by', 'uploaded_at')
+    search_fields = ('name', 'machine_preset', 'process_preset')
+    readonly_fields = (
+        'machine_preset', 'process_preset', 'filament_presets', 'uploaded_by', 'uploaded_at',
+    )
 
+    def get_readonly_fields(self, request, obj=None):
+        # The file is never replaced once uploaded (see SlicerTemplate).
+        return self.readonly_fields + (('file',) if obj else ())
 
-@admin.register(Filament)
-class FilamentAdmin(admin.ModelAdmin):
-    list_display = ('filament_type', 'color')
-    list_filter = ('filament_type',)
-    search_fields = ('filament_type', 'color')
-
-
-class PrinterFilamentInline(admin.TabularInline):
-    model = PrinterFilament
-    extra = 0
-    max_num = Printer.MAX_FILAMENT_SLOTS
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.uploaded_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(Printer)
 class PrinterAdmin(admin.ModelAdmin):
-    list_display = ('name', 'printer_model', 'template_path', 'bambuddy_printer_id', 'serial_number', 'is_active')
-    list_filter = ('is_active', 'printer_model')
+    list_display = ('name', 'default_template', 'bambuddy_printer_id', 'serial_number', 'is_active')
+    list_filter = ('is_active',)
     search_fields = ('name', 'serial_number')
-    inlines = [PrinterFilamentInline]
+    filter_horizontal = ('templates',)
 
 
 @admin.register(AddPrinterTicket)
@@ -80,7 +72,7 @@ class AddPrinterTicketAdmin(admin.ModelAdmin):
     """A record of who added which printer. Tickets are made on /printers/
     and changed only by the print agent, so this is read-only; the access
     code is never shown."""
-    list_display = ('name', 'printer_model', 'status', 'requested_by', 'agent', 'created_at')
+    list_display = ('name', 'status', 'requested_by', 'agent', 'created_at')
     list_filter = ('status',)
     search_fields = ('name', 'serial_number')
     exclude = ('access_code',)

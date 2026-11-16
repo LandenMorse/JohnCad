@@ -1,7 +1,7 @@
+import io
 import json
 import os
-import shutil
-import tempfile
+import zipfile
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -27,29 +27,35 @@ from .dispatch import (
     retry_dispatch,
     sync_from_bambuddy,
 )
-from .models import Job, Printer
+from .models import Job, Printer, SlicerTemplate
 from .services import approve_job, claim_next_job, reset_stale_claims, slice_claimed_job
 from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_3mf
 
 User = get_user_model()
 
 
+PROJECT_SETTINGS = {
+    'printer_settings_id': 'Bambu Lab X1 Carbon 0.4 nozzle',
+    'print_settings_id': '0.20mm Standard @BBL X1C',
+    'filament_settings_id': ['Bambu PLA Basic @BBL X1C'],
+}
+
+
+def template_3mf(project_settings=PROJECT_SETTINGS, name='template.3mf'):
+    """An upload that looks like an OrcaSlicer project: a zip with the
+    settings file in it. `project_settings=None` leaves the settings out."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr('3D/3dmodel.model', '<model/>')
+        if project_settings is not None:
+            archive.writestr('Metadata/project_settings.config', json.dumps(project_settings))
+    return SimpleUploadedFile(name, buffer.getvalue())
+
+
 class ReviewTestBase(TestCase):
     @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        # A real (empty) template file for slice_to_3mf, which checks it exists.
-        template_dir = tempfile.mkdtemp(prefix='johncad-template-')
-        cls.addClassCleanup(shutil.rmtree, template_dir, True)
-        cls.template_file = os.path.join(template_dir, 'template.3mf')
-        with open(cls.template_file, 'wb') as f:
-            f.write(b'template')
-        template_override = override_settings(ORCA_SLICER_TEMPLATE=cls.template_file)
-        template_override.enable()
-        cls.addClassCleanup(template_override.disable)
-
-    @classmethod
     def setUpTestData(cls):
+        cls.template = SlicerTemplate.objects.create(name='Standard', file=template_3mf())
         cls.student = User.objects.create_user('student', password='pw')
         cls.teacher = User.objects.create_user('teacher', password='pw', is_staff=True)
         cls.root = User.objects.create_superuser('root', password='pw')
@@ -65,6 +71,24 @@ class ReviewTestBase(TestCase):
     def make_job(self, **kwargs):
         kwargs.setdefault('classroom', self.classroom)
         return Job.objects.create(user=self.student, attachment=self.attachment, **kwargs)
+
+    def make_printer(self, name='X1C', bambuddy_printer_id=1, templates=None, **kwargs):
+        """A printer offering `templates` (default: the Standard one); the
+        first is its default."""
+        printer = Printer.objects.create(
+            name=name, bambuddy_printer_id=bambuddy_printer_id, **kwargs,
+        )
+        printer.set_templates([self.template] if templates is None else templates)
+        return printer
+
+    def approve(self, job, printer, template=None, **kwargs):
+        """POST the review page's approve form as the logged-in teacher."""
+        template = template or printer.default_template
+        return self.client.post(
+            reverse('job-review-approve', args=[job.pk]),
+            {'target': f'{printer.pk}:{template.pk}'},
+            **kwargs,
+        )
 
 
 class ReviewAccessTests(ReviewTestBase):
@@ -118,12 +142,13 @@ class ReviewListTests(ReviewTestBase):
 
 class ReviewActionTests(ReviewTestBase):
     def setUp(self):
+        self.printer = self.make_printer()
         self.client.force_login(self.teacher)
 
     @mock.patch('jobs.services.slice_to_3mf')
     def test_approve_returns_immediately_without_slicing(self, slice_mock):
         job = self.make_job()
-        response = self.client.post(reverse('job-review-approve', args=[job.pk]))
+        response = self.approve(job, self.printer)
         self.assertRedirects(response, reverse('job-review'))
         slice_mock.assert_not_called()
         job.refresh_from_db()
@@ -133,7 +158,7 @@ class ReviewActionTests(ReviewTestBase):
 
     def test_retry_failed_job_clears_error(self):
         job = self.make_job(status=Job.Status.APPROVED, slicing_error='boom')
-        self.client.post(reverse('job-review-approve', args=[job.pk]))
+        self.approve(job, self.printer)
         job.refresh_from_db()
         self.assertEqual(job.slicing_error, '')
         self.assertEqual(job.slicing_state, 'waiting')
@@ -142,14 +167,14 @@ class ReviewActionTests(ReviewTestBase):
         job = self.make_job(
             status=Job.Status.APPROVED, slicing_started_at=timezone.now(), slicing_error='old',
         )
-        self.client.post(reverse('job-review-approve', args=[job.pk]))
+        self.approve(job, self.printer)
         job.refresh_from_db()
         self.assertEqual(job.slicing_error, 'old')
 
     def test_cannot_approve_rejected_or_finished(self):
         for status in (Job.Status.REJECTED, Job.Status.FINISHED):
             job = self.make_job(status=status)
-            self.client.post(reverse('job-review-approve', args=[job.pk]))
+            self.approve(job, self.printer)
             job.refresh_from_db()
             self.assertEqual(job.status, status)
 
@@ -710,7 +735,7 @@ class DispatchButtonTests(DispatchTestBase):
 class SlicingOutputTests(ReviewTestBase):
     @override_settings(ORCA_SLICER_CMD='orca')
     def test_exports_3mf_and_queues(self):
-        job = self.make_job(status=Job.Status.APPROVED)
+        job = self.make_job(status=Job.Status.APPROVED, template=self.template)
         commands = []
         with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
             slice_to_3mf(job)
@@ -720,7 +745,7 @@ class SlicingOutputTests(ReviewTestBase):
 
     @override_settings(ORCA_SLICER_CMD='orca')
     def test_command_is_the_template_command(self):
-        job = self.make_job(status=Job.Status.APPROVED)
+        job = self.make_job(status=Job.Status.APPROVED, template=self.template)
         commands = []
         with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
             slice_to_3mf(job)
@@ -729,7 +754,7 @@ class SlicingOutputTests(ReviewTestBase):
         self.assertEqual(command[:6], ['orca', '--arrange', '1', '--slice', '0', '--export-3mf'])
         self.assertTrue(os.path.isabs(export) and export.endswith('.gcode.3mf'))
         # The template comes right before the .stl, which is last.
-        self.assertEqual(command[-2:], [self.template_file, job.attachment.file.path])
+        self.assertEqual(command[-2:], [self.template.file.path, job.attachment.file.path])
         # Presets are no longer loaded one by one: the template holds them.
         self.assertNotIn('--load-settings', command)
         self.assertNotIn('--load-filaments', command)
@@ -738,14 +763,14 @@ class SlicingOutputTests(ReviewTestBase):
     def test_datadir_goes_before_the_template(self):
         commands = []
         with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
-            slice_to_3mf(self.make_job(status=Job.Status.APPROVED))
+            slice_to_3mf(self.make_job(status=Job.Status.APPROVED, template=self.template))
         command = commands[0]
         self.assertEqual(command[command.index('--datadir') + 1], '/orca/data')
-        self.assertLess(command.index('--datadir'), command.index(self.template_file))
+        self.assertLess(command.index('--datadir'), command.index(self.template.file.path))
 
     @override_settings(ORCA_SLICER_CMD='orca')
     def test_no_3mf_output_fails(self):
-        job = self.make_job(status=Job.Status.APPROVED)
+        job = self.make_job(status=Job.Status.APPROVED, template=self.template)
         result = mock.Mock(returncode=0, stdout='', stderr='')
         with mock.patch('jobs.slicing.subprocess.run', return_value=result):
             with self.assertRaises(SlicingFailed):
@@ -761,84 +786,121 @@ def fake_orca(outputs):
     return run
 
 
-class PrinterSelectionTests(ReviewTestBase):
-    """Teacher picks the printer on /review/; it is required once printers exist."""
+class ApprovalChoiceTests(ReviewTestBase):
+    """The teacher picks a printer and one of its templates on /review/."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.fine = SlicerTemplate.objects.create(name='Fine', file=template_3mf())
+        cls.petg = SlicerTemplate.objects.create(name='PETG', file=template_3mf())
 
     def setUp(self):
-        self.p1 = Printer.objects.create(name='X1C', bambuddy_printer_id=4)
-        self.p2 = Printer.objects.create(name='P1S', bambuddy_printer_id=9)
+        self.p1 = self.make_printer('X1C', 4, templates=[self.template, self.fine])
+        self.p2 = self.make_printer('P1S', 9, templates=[self.petg])
         self.client.force_login(self.teacher)
 
-    def approve(self, job, **data):
-        return self.client.post(reverse('job-review-approve', args=[job.pk]), data, follow=True)
-
-    def test_approve_with_printer_sets_it(self):
+    def test_approve_sets_printer_and_template(self):
         job = self.make_job()
-        response = self.approve(job, printer=self.p2.pk)
+        response = self.approve(job, self.p1, self.fine, follow=True)
         job.refresh_from_db()
-        self.assertEqual(job.status, Job.Status.APPROVED)
-        self.assertEqual(job.printer, self.p2)
-        self.assertContains(response, 'approved for P1S')
+        self.assertEqual(
+            (job.status, job.printer, job.template), (Job.Status.APPROVED, self.p1, self.fine),
+        )
+        self.assertContains(response, 'approved for X1C with &quot;Fine&quot;')
 
-    def test_approve_without_printer_is_refused(self):
+    def test_approve_without_a_choice_is_refused(self):
         job = self.make_job()
-        response = self.approve(job)
+        response = self.client.post(reverse('job-review-approve', args=[job.pk]), follow=True)
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.PENDING)
-        self.assertContains(response, 'Choose a printer')
+        self.assertContains(response, 'Choose a printer and template.')
 
-    def test_unknown_or_inactive_printer_is_refused(self):
-        self.p1.is_active = False
-        self.p1.save()
+    def test_bad_choices_are_refused(self):
+        inactive = self.make_printer('Old', 2, is_active=False)
+        bare = Printer.objects.create(name='Bare', bambuddy_printer_id=3)
         job = self.make_job()
-        for value in (self.p1.pk, 99999, 'abc'):
-            self.approve(job, printer=value)
-            job.refresh_from_db()
-            self.assertEqual(job.status, Job.Status.PENDING)
-            self.assertIsNone(job.printer)
+        for target in (
+            f'{self.p2.pk}:{self.fine.pk}',  # another printer's template
+            f'{inactive.pk}:{self.template.pk}',
+            f'{bare.pk}:{self.template.pk}',
+            f'99999:{self.template.pk}',
+            f'{self.p1.pk}:99999',
+            f'{self.p1.pk}',
+            'abc',
+        ):
+            with self.subTest(target=target):
+                response = self.client.post(
+                    reverse('job-review-approve', args=[job.pk]), {'target': target}, follow=True,
+                )
+                job.refresh_from_db()
+                self.assertEqual((job.status, job.printer, job.template), (Job.Status.PENDING, None, None))
+                self.assertContains(response, 'no longer available')
 
-    def test_without_any_printers_set_up_approval_still_works(self):
-        Printer.objects.all().delete()
-        job = self.make_job()
-        self.approve(job)
-        job.refresh_from_db()
-        self.assertEqual(job.status, Job.Status.APPROVED)
-        self.assertIsNone(job.printer)
-
-    def test_slicing_retry_can_change_printer(self):
+    def test_slicing_retry_can_change_printer_and_template(self):
         job = self.make_job(
-            status=Job.Status.APPROVED, slicing_error='bad preset', printer=self.p1,
+            status=Job.Status.APPROVED, slicing_error='bad template',
+            printer=self.p1, template=self.template,
         )
-        self.approve(job, printer=self.p2.pk)
+        self.approve(job, self.p2, self.petg)
         job.refresh_from_db()
-        self.assertEqual(job.printer, self.p2)
-        self.assertEqual(job.slicing_error, '')
+        self.assertEqual((job.printer, job.template, job.slicing_error), (self.p2, self.petg, ''))
 
-    def test_admin_style_approve_needs_a_printer(self):
+    def test_admin_style_approve_uses_the_printers_default_template(self):
         job = self.make_job()
         self.assertFalse(approve_job(job))
         job.printer = self.p1
         job.save()
         self.assertTrue(approve_job(job))
+        job.refresh_from_db()
+        self.assertEqual(job.template, self.template)
 
-    def test_review_page_shows_picker_and_printer_column(self):
+    def test_approve_job_keeps_the_jobs_template_on_the_same_printer(self):
+        job = self.make_job(
+            status=Job.Status.APPROVED, slicing_error='boom', printer=self.p1, template=self.fine,
+        )
+        self.assertTrue(approve_job(job))
+        job.refresh_from_db()
+        self.assertEqual(job.template, self.fine)
+
+    def test_approve_job_refuses_a_template_the_printer_does_not_offer(self):
+        job = self.make_job()
+        self.assertFalse(approve_job(job, self.p1, self.petg))
+        bare = Printer.objects.create(name='Bare', bambuddy_printer_id=3)
+        self.assertFalse(approve_job(job, bare))
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.PENDING)
+
+    def test_review_page_offers_each_printers_templates(self):
         self.make_job()
-        self.make_job(status=Job.Status.APPROVED, printer=self.p1)
+        self.make_job(status=Job.Status.APPROVED, printer=self.p1, template=self.fine)
         response = self.client.get(reverse('job-review'))
-        self.assertContains(response, '<option value="%d">X1C</option>' % self.p1.pk, html=False)
-        self.assertContains(response, 'name="printer"')
-        self.assertContains(response, '<td>X1C</td>', html=False)
+        self.assertContains(response, 'name="target"')
+        self.assertContains(
+            response, f'<option value="{self.p1.pk}:{self.template.pk}">X1C: Standard (default)</option>',
+        )
+        self.assertContains(response, f'<option value="{self.p1.pk}:{self.fine.pk}">X1C: Fine</option>')
+        self.assertContains(response, f'<option value="{self.p2.pk}:{self.petg.pk}">P1S: PETG (default)</option>')
+        self.assertNotContains(response, f'value="{self.p2.pk}:{self.fine.pk}"')
+        # The approved job's row names its printer and template.
+        self.assertContains(response, '<div class="cell-sub">Fine</div>')
 
-    def test_inactive_printer_not_offered(self):
+    def test_retry_preselects_the_jobs_choice(self):
+        self.make_job(
+            status=Job.Status.APPROVED, slicing_error='boom', printer=self.p1, template=self.fine,
+        )
+        response = self.client.get(reverse('job-review'))
+        self.assertContains(response, f'<option value="{self.p1.pk}:{self.fine.pk}" selected>')
+
+    def test_inactive_or_templateless_printers_are_not_offered(self):
         self.p2.is_active = False
         self.p2.save()
+        self.p1.set_templates([])
         self.make_job()
-        self.assertNotContains(self.client.get(reverse('job-review')), 'P1S')
-
-    def test_no_picker_when_no_printers(self):
-        Printer.objects.all().delete()
-        self.make_job()
-        self.assertNotContains(self.client.get(reverse('job-review')), 'name="printer"')
+        response = self.client.get(reverse('job-review'))
+        self.assertNotContains(response, 'X1C:')
+        self.assertNotContains(response, 'P1S:')
+        self.assertContains(response, 'No printer is ready to print')
 
     def test_printer_with_jobs_cannot_be_deleted(self):
         from django.db.models import ProtectedError
@@ -848,54 +910,41 @@ class PrinterSelectionTests(ReviewTestBase):
 
 
 @override_settings(ORCA_SLICER_CMD='orca')
-class PrinterSlicingTests(ReviewTestBase):
+class TemplateSlicingTests(ReviewTestBase):
     def slice(self, job):
         commands = []
         with mock.patch('jobs.slicing.subprocess.run', side_effect=fake_orca(commands)):
             slice_to_3mf(job)
         return commands[0]
 
-    def test_printer_without_template_uses_the_env_default(self):
-        printer = Printer.objects.create(name='A1', bambuddy_printer_id=3)
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[-2], self.template_file)
+    def test_slices_into_the_jobs_template(self):
+        other = SlicerTemplate.objects.create(name='Other', file=template_3mf())
+        command = self.slice(self.make_job(status=Job.Status.APPROVED, template=other))
+        self.assertEqual(command[-2], other.file.path)
+        self.assertTrue(command[-2].startswith(str(settings.MEDIA_ROOT)))
 
-    def test_printers_own_template_wins(self):
-        own = os.path.join(os.path.dirname(self.template_file), 'own.3mf')
-        with open(own, 'wb') as f:
-            f.write(b'own')
-        printer = Printer.objects.create(name='A1', bambuddy_printer_id=3, template_path=own)
-        command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(command[-2], own)
-
-    def test_job_without_printer_uses_env(self):
-        command = self.slice(self.make_job(status=Job.Status.APPROVED))
-        self.assertEqual(command[-2], self.template_file)
-
-    def test_home_is_expanded_in_template_paths(self):
-        home = os.path.dirname(self.template_file)
-        printer = Printer.objects.create(
-            name='A1', bambuddy_printer_id=3, template_path='$HOME/template.3mf',
-        )
-        with mock.patch.dict(os.environ, {'HOME': home, 'USERPROFILE': home}):
-            command = self.slice(self.make_job(status=Job.Status.APPROVED, printer=printer))
-        self.assertEqual(os.path.normpath(command[-2]), os.path.join(home, 'template.3mf'))
-
-    @override_settings(ORCA_SLICER_TEMPLATE='')
-    def test_no_template_anywhere_is_not_configured(self):
+    def test_job_without_a_template_is_not_configured(self):
         job = self.make_job(status=Job.Status.APPROVED)
-        with self.assertRaisesMessage(SlicerNotConfigured, 'No slicer template'):
-            slice_to_3mf(job)
-
-    def test_missing_template_file_names_the_printer_and_path(self):
-        printer = Printer.objects.create(
-            name='A1', bambuddy_printer_id=3, template_path='/nowhere/missing.3mf',
-        )
-        job = self.make_job(status=Job.Status.APPROVED, printer=printer)
         with mock.patch('jobs.slicing.subprocess.run') as run:
-            with self.assertRaisesMessage(SlicerNotConfigured, '/nowhere/missing.3mf'):
+            with self.assertRaisesMessage(SlicerNotConfigured, 'No slicer template was chosen'):
                 slice_to_3mf(job)
         run.assert_not_called()
+
+    def test_missing_template_file_names_the_template(self):
+        gone = SlicerTemplate.objects.create(name='Gone', file=template_3mf())
+        os.remove(gone.file.path)
+        job = self.make_job(status=Job.Status.APPROVED, template=gone)
+        with mock.patch('jobs.slicing.subprocess.run') as run:
+            with self.assertRaisesMessage(SlicerNotConfigured, 'slicer template "Gone" is missing'):
+                slice_to_3mf(job)
+        run.assert_not_called()
+
+    def test_worker_stores_the_missing_template_error_for_review(self):
+        job = self.make_job(status=Job.Status.APPROVED, approved_at=timezone.now())
+        self.assertFalse(slice_claimed_job(claim_next_job()))
+        job.refresh_from_db()
+        self.assertIn('No slicer template was chosen', job.slicing_error)
+        self.assertEqual(job.slicing_state, 'failed')
 
 
 class PrinterDispatchTests(DispatchTestBase):

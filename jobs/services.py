@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Job, Printer
+from .models import Job
 from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_3mf
 
 logger = logging.getLogger(__name__)
@@ -20,38 +20,72 @@ def jobs_visible_to(user):
     return Job.objects.filter(Q(classroom__teachers=user) | Q(user=user)).distinct()
 
 
-def approve_job(job, printer=None):
+def _template_for_approval(job, printer, template):
+    """The template to slice `job` into on `printer`, or None. A template the
+    caller names must be one of the printer's; with none named, the job keeps
+    the one it had for this printer, else the printer's default."""
+    offered = set(printer.templates.all())
+    if template is not None:
+        return template if template in offered else None
+    kept = job.template if job.printer_id == printer.pk else None
+    return next((t for t in (kept, printer.default_template) if t in offered), None)
+
+
+def approve_job(job, printer=None, template=None):
     """Approve a pending job, or re-queue one whose slicing failed.
 
-    `printer` is the teacher's choice; it decides the slicer presets and which
-    Bambuddy printer the job goes to. Without one, the job's existing printer
-    is kept. Once any active printer exists, a job can't be approved without a
-    printer (returns False); with none set up, jobs use the .env settings.
+    `printer` and `template` are the teacher's choice: the printer decides
+    which Bambuddy printer the job goes to, the template (one of that
+    printer's) is what it is sliced into. Without a printer the job's existing
+    one is kept; without a template, see `_template_for_approval`. A job can't
+    be approved without both (returns False).
 
     Slicing itself happens later in the `slice_worker` command, so this returns
     immediately. Returns False if the job wasn't in a state that can be
     (re)approved, e.g. it's already being sliced or was rejected.
     """
     printer = printer or job.printer
-    if printer is None and Printer.objects.filter(is_active=True).exists():
+    if printer is None:
+        return False
+    template = _template_for_approval(job, printer, template)
+    if template is None:
         return False
     approved = Job.objects.filter(pk=job.pk, status=Job.Status.PENDING).update(
         status=Job.Status.APPROVED,
         approved_at=timezone.now(),
         slicing_error='',
         printer=printer,
+        template=template,
     )
     if approved:
         return True
     # Retry: only a job whose slice failed, never one a worker is slicing. The
-    # printer may change here, since a wrong preset is a common reason to fail.
+    # printer and template may change here, since a wrong template is a common
+    # reason to fail.
     return bool(
         Job.objects.filter(
             pk=job.pk,
             status=Job.Status.APPROVED,
             slicing_started_at__isnull=True,
-        ).exclude(slicing_error='').update(slicing_error='', printer=printer)
+        ).exclude(slicing_error='').update(
+            slicing_error='', printer=printer, template=template,
+        )
     )
+
+
+def delete_template(template):
+    """Delete a slicer template and its file. Returns False (and deletes
+    nothing) while a job is still waiting to be sliced with it."""
+    with transaction.atomic():
+        waiting = Job.objects.select_for_update().filter(
+            template=template, status=Job.Status.APPROVED, sliced_file='',
+        )
+        if waiting.exists():
+            return False
+        stored_file = template.file
+        template.delete()
+        transaction.on_commit(lambda: stored_file.delete(save=False))
+    return True
 
 
 def reject_job(job):
@@ -79,7 +113,7 @@ def claim_next_job():
     with transaction.atomic():
         job = (
             Job.objects.select_for_update(skip_locked=True)
-            .select_related('attachment')
+            .select_related('attachment', 'template')
             .filter(
                 status=Job.Status.APPROVED,
                 sliced_file='',

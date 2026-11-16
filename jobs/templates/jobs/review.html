@@ -6,6 +6,12 @@
 <h1>Review Jobs</h1>
 <p class="subtitle">Newest first.</p>
 
+{% if not printers %}
+<div class="card">
+    <p class="error-detail">No printer is ready to print: a job needs a printer that is in use and has a slicer template. Set one up on the <a href="{% url 'printers' %}">Printers</a> page.</p>
+</div>
+{% endif %}
+
 {% if classes or user.is_superuser %}
 <form method="get" class="inline-form filter-bar">
     <label for="classroom-filter">Class</label>
@@ -51,7 +57,10 @@
                     {% if job.user.get_full_name %}<div class="cell-sub">{{ job.user.get_full_name }}</div>{% endif %}
                 </td>
                 <td>{{ job.classroom.name|default:"—" }}</td>
-                <td>{{ job.printer.name|default:"—" }}</td>
+                <td>
+                    {{ job.printer.name|default:"—" }}
+                    {% if job.template %}<div class="cell-sub">{{ job.template.name }}</div>{% endif %}
+                </td>
                 <td>{{ job.attachment.uploaded_at }}</td>
                 <td>{{ job.created_at }}</td>
                 <td>
@@ -70,12 +79,15 @@
                         <form method="post" action="{% url 'job-review-approve' job.pk %}" class="inline-form">
                             {% csrf_token %}
                             {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
-                            {% if printers %}
-                            <select name="printer" required aria-label="Printer for job {{ job.pk }}">
-                                <option value=""{% if not job.printer_id %} selected{% endif %}>Printer&hellip;</option>
-                                {% for printer in printers %}<option value="{{ printer.pk }}"{% if job.printer_id == printer.pk %} selected{% endif %}>{{ printer.name }}</option>{% endfor %}
+                            <select name="target" required aria-label="Printer and template for job {{ job.pk }}">
+                                <option value="">Printer and template&hellip;</option>
+                                {% for printer in printers %}
+                                <optgroup label="{{ printer.name }}">
+                                    {% for template in printer.templates.all %}<option value="{{ printer.pk }}:{{ template.pk }}"{% if job.printer_id == printer.pk and job.template_id == template.pk %} selected{% endif %}>{{ printer.name }}: {{ template.name }}{% if template.pk == printer.default_template_id %} (default){% endif %}</option>
+                                    {% endfor %}
+                                </optgroup>
+                                {% endfor %}
                             </select>
-                            {% endif %}
                             <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
                         </form>
                         {% endif %}

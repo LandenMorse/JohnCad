@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ printer.name }}{% endblock %}
+{% block content %}
+<h1>{{ printer.name }}</h1>
+<p class="subtitle"><a class="back-link" href="{% url 'printers' %}">All printers</a></p>
+
+<div class="card">
+    <dl class="printer-facts">
+        <dt>Serial</dt><dd>{{ printer.serial_number|default:"—" }}</dd>
+        <dt>Bambuddy id</dt><dd>{{ printer.bambuddy_printer_id }}</dd>
+    </dl>
+    <form method="post" class="choice-form">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <p>{{ form.name.errors }}{{ form.name.label_tag }} {{ form.name }}</p>
+        <p>{{ form.is_active.errors }}<label class="check-label">{{ form.is_active }} {{ form.is_active.label }}</label>
+            <span class="helptext">{{ form.is_active.help_text }}</span></p>
+        <fieldset>
+            <legend>{{ form.templates.label }}</legend>
+            {{ form.templates.errors }}
+            {% if has_templates %}
+            {{ form.templates }}
+            <span class="helptext">{{ form.templates.help_text }}</span>
+            {% else %}
+            <p class="cell-sub">There are no templates yet.</p>
+            {% endif %}
+        </fieldset>
+        {% if has_templates %}
+        <p>{{ form.default_template.errors }}{{ form.default_template.label_tag }} {{ form.default_template }}
+            <span class="helptext">{{ form.default_template.help_text }}</span></p>
+        {% endif %}
+        <button type="submit">Save</button>
+        <a class="btn btn-ghost" href="{% url 'template-upload' %}?printer={{ printer.pk }}">Upload a new template</a>
+    </form>
+</div>
+{% endblock %}
