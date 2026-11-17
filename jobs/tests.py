@@ -153,6 +153,17 @@ class JobDeleteTests(ReviewTestBase):
         self.assertEqual(self.client.get(reverse('job-review-delete', args=[job.pk])).status_code, 405)
 
 
+class ReviewGroupingTests(ReviewTestBase):
+    def test_jobs_grouped_by_status(self):
+        rejected = self.make_job()
+        Job.objects.filter(pk=rejected.pk).update(status=Job.Status.REJECTED)
+        pending = self.make_job()
+        self.client.force_login(self.teacher)
+        response = self.client.get(reverse('job-review'))
+        groups = [(label, [j.pk for j in jobs]) for label, jobs in response.context['job_groups']]
+        self.assertEqual(groups, [('Pending', [pending.pk]), ('Rejected', [rejected.pk])])
+
+
 class DjangoAdminAccessTests(ReviewTestBase):
     def test_staff_cannot_use_admin(self):
         self.client.force_login(self.teacher)

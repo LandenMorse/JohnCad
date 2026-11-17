@@ -37,9 +37,11 @@
     </div>
 </div>
 
-{% if jobs %}
+{% for status_label, group in job_groups %}
+<section class="job-group">
+<h2 class="job-group-title">{{ status_label }} <span class="job-group-count">{{ group|length }}</span></h2>
 <div class="job-grid">
-    {% for job in jobs %}
+    {% for job in group %}
     <div class="card job-card">
         <div class="job-card-head">
             <h3>{{ job.attachment.name }}</h3>
@@ -108,7 +110,8 @@
     </div>
     {% endfor %}
 </div>
-{% else %}
+</section>
+{% empty %}
 <div class="card"><p class="empty-row">No jobs yet.</p></div>
-{% endif %}
+{% endfor %}
 {% endblock %}

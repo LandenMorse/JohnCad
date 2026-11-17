@@ -106,6 +106,7 @@ def review(request):
     jobs = list(jobs)
     return render(request, 'jobs/review.html', {
         'jobs': jobs,
+        'job_groups': _group_by_status(jobs),
         'classes': classes,
         'printers': JobApprovalForm.approval_choices(),
         'selected_classroom': selected,
@@ -116,6 +117,22 @@ def review(request):
         ),
         'pending_count': sum(job.status == Job.Status.PENDING for job in jobs),
     })
+
+
+REVIEW_STATUS_ORDER = [
+    Job.Status.PENDING, Job.Status.APPROVED, Job.Status.QUEUED, Job.Status.WORKING,
+    Job.Status.FAILED, Job.Status.FINISHED, Job.Status.REJECTED,
+]
+
+
+def _group_by_status(jobs):
+    """[(status label, jobs)] for the statuses that have jobs, needs-attention
+    first; each group keeps the newest-first order of `jobs`."""
+    return [
+        (status.label, [job for job in jobs if job.status == status])
+        for status in REVIEW_STATUS_ORDER
+        if any(job.status == status for job in jobs)
+    ]
 
 
 def _back_to_review(request):

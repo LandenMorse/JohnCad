@@ -474,6 +474,13 @@ a.btn { display: inline-block; text-decoration: none; }
 .printer-templates li::before { content: "- "; color: var(--muted-dim); }
 
 /* /review/: one card per job */
+.job-group { margin-bottom: 2rem; }
+.job-group-title {
+  margin: 0 0 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border-strong);
+  font-size: 1.4rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.job-group-count { color: var(--muted); font-size: 1.1rem; margin-left: 0.4rem; }
+.job-group .job-grid { margin-bottom: 0; }
 .job-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
