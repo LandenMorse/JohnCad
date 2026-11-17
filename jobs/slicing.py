@@ -17,6 +17,61 @@ class SlicingFailed(Exception):
     pass
 
 
+# What OrcaSlicer's CLI exit codes mean (CLI_* in OrcaSlicer's
+# src/libslic3r/Utils.hpp), for the ones a template or a model can cause.
+EXIT_REASONS = {
+    -3: 'a file it was given could not be found',
+    -15: 'the template asks to change the printer, which the command line cannot do',
+    -16: "the template's printer is not supported by this OrcaSlicer",
+    -17: "the template's process settings do not suit its printer",
+    -18: 'the template has invalid values in its settings',
+    -21: 'the model could not be arranged on the plate (it may be too big)',
+    -24: (
+        'the template was saved by a newer OrcaSlicer or Bambu Studio than the one on '
+        'the server. Update OrcaSlicer on the site Pi (flatpak update '
+        'com.orcaslicer.OrcaSlicer), or save the template again with the same version'
+    ),
+    -50: 'there was nothing on the plate it could print',
+    -51: "the model failed OrcaSlicer's checks for this printer",
+    -52: 'the model sticks out past the edge of the plate',
+    -61: "a filament in the template can't be used on the template's bed type",
+    -62: 'the filaments in the template need temperatures too far apart',
+    -100: 'slicing failed',
+    -101: 'the print head would hit something on the plate',
+    -102: 'part of the print is in an area the printer cannot reach',
+}
+# The end of OrcaSlicer's output usually says what went wrong; the rest is
+# progress noise.
+OUTPUT_TAIL_LINES = 15
+
+
+def _signed_exit_code(returncode):
+    """OrcaSlicer returns negative codes; Linux reports -24 as 232, Windows
+    as 4294967272."""
+    if returncode > 2 ** 31:
+        return returncode - 2 ** 32
+    if returncode > 127:
+        return returncode - 256
+    return returncode
+
+
+def describe_failure(result, template):
+    """The slicing error for an OrcaSlicer run that exited non-zero."""
+    code = _signed_exit_code(result.returncode)
+    message = f'OrcaSlicer exited {result.returncode}'
+    if code != result.returncode:
+        message += f' ({code})'
+    reason = EXIT_REASONS.get(code)
+    if reason:
+        message += f': {reason}.'
+    if code == -24 and template.saved_with:
+        message += f' The template was saved with {template.saved_with}.'
+    output = (result.stderr or result.stdout or '').strip().splitlines()
+    if output:
+        message += '\n' + '\n'.join(output[-OUTPUT_TAIL_LINES:])
+    return message
+
+
 # Name Orca is told to write; Bambu printers (via Bambuddy) take a sliced
 # .gcode.3mf, not bare G-code.
 OUTPUT_NAME = 'output.gcode.3mf'
@@ -100,9 +155,7 @@ def slice_to_3mf(job):
             ) from exc
 
         if result.returncode != 0:
-            raise SlicingFailed(
-                f'OrcaSlicer exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}'
-            )
+            raise SlicingFailed(describe_failure(result, job.template))
 
         # Prefer the requested name, but accept whatever .3mf Orca wrote.
         output = Path(tmp_dir) / OUTPUT_NAME

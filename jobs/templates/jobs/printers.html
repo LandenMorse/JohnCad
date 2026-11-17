@@ -65,6 +65,7 @@
                     {{ template.machine_preset|default:"—" }}
                     {% if template.process_preset %}<div class="cell-sub">{{ template.process_preset }}</div>{% endif %}
                     {% if template.filament_presets %}<div class="cell-sub">{{ template.filament_presets|join:", " }}</div>{% endif %}
+                    {% if template.saved_with %}<div class="cell-sub">Saved with {{ template.saved_with }}</div>{% endif %}
                 </td>
                 <td>{% for printer in template.printers.all %}{{ printer.name }}{% if not forloop.last %}, {% endif %}{% empty %}<span class="cell-sub">No printer</span>{% endfor %}</td>
                 <td>{{ template.uploaded_at|date:"M j, Y" }}{% if template.uploaded_by %}<div class="cell-sub">by {{ template.uploaded_by.username }}</div>{% endif %}</td>

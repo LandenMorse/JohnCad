@@ -49,16 +49,24 @@ class TemplateFileTests(SimpleTestCase):
             machine='Bambu Lab X1 Carbon 0.4 nozzle',
             process='0.20mm Standard @BBL X1C',
             filaments=('Bambu PLA Basic @BBL X1C',),
+            saved_with='OrcaSlicer-2.5.1',
         ))
         # Left at the start, so it can still be saved.
         self.assertEqual(upload.tell(), 0)
 
+    def test_saved_with_is_read_from_the_model_metadata(self):
+        self.assertEqual(
+            read_presets(template_3mf(saved_with='BambuStudio-02.04.00.70')).saved_with,
+            'BambuStudio-02.04.00.70',
+        )
+        self.assertEqual(read_presets(template_3mf(saved_with='')).saved_with, '')
+
     def test_missing_or_odd_settings_values_are_blank(self):
-        self.assertEqual(read_presets(template_3mf({})), Presets())
+        self.assertEqual(read_presets(template_3mf({}, saved_with='')), Presets())
         self.assertEqual(
             read_presets(template_3mf({
                 'printer_settings_id': 5, 'filament_settings_id': 'Generic PLA',
-            })),
+            }, saved_with='')),
             Presets(filaments=('Generic PLA',)),
         )
 
@@ -87,6 +95,7 @@ class SlicerTemplateModelTests(PrinterTestBase):
             (PROJECT_SETTINGS['printer_settings_id'], PROJECT_SETTINGS['print_settings_id'],
              PROJECT_SETTINGS['filament_settings_id']),
         )
+        self.assertEqual(self.template.saved_with, 'OrcaSlicer-2.5.1')
         self.assertTrue(self.template.file.name.startswith('slicer_templates/'))
 
     def test_full_clean_rejects_a_bad_file_or_extension(self):
@@ -337,6 +346,7 @@ class PrintersPageTests(PrinterTestBase):
             reverse('printer-detail', args=[ready.pk]),
             # The library table.
             PROJECT_SETTINGS['printer_settings_id'], PROJECT_SETTINGS['print_settings_id'],
+            'Saved with OrcaSlicer-2.5.1',
             reverse('template-download', args=[fine.pk]),
             reverse('template-upload'),
         ):

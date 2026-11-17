@@ -49,6 +49,12 @@ class SlicerTemplate(models.Model):
     machine_preset = models.CharField(max_length=255, blank=True, editable=False)
     process_preset = models.CharField(max_length=255, blank=True, editable=False)
     filament_presets = models.JSONField(default=list, blank=True, editable=False)
+    # db_default: the previous release, which doesn't know this column, can
+    # still add templates.
+    saved_with = models.CharField(
+        max_length=100, blank=True, editable=False, db_default='',
+        help_text='The program and version that saved the file, e.g. "OrcaSlicer-2.5.1".',
+    )
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -76,6 +82,7 @@ class SlicerTemplate(models.Model):
             self.machine_preset = presets.machine
             self.process_preset = presets.process
             self.filament_presets = list(presets.filaments)
+            self.saved_with = presets.saved_with
         super().save(*args, **kwargs)
 
 
