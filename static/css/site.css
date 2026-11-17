@@ -342,9 +342,9 @@ td {
 
 tbody tr:hover { background: rgba(237, 231, 212, 0.025); }
 
-td a { color: var(--accent-strong); text-decoration: none; }
-td a:hover { text-decoration: underline; }
-td a::before { content: "> "; color: var(--muted-dim); }
+td a, .job-card a:not(.btn) { color: var(--accent-strong); text-decoration: none; }
+td a:hover, .job-card a:not(.btn):hover { text-decoration: underline; }
+td a::before, .job-card a:not(.btn)::before { content: "> "; color: var(--muted-dim); }
 
 .empty-row td { color: var(--muted-dim); text-align: center; padding: 1.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
 
