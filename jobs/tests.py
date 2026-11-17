@@ -29,7 +29,7 @@ from .dispatch import (
 )
 from .models import Job, Printer, SlicerTemplate
 from .services import approve_job, claim_next_job, reset_stale_claims, slice_claimed_job
-from .slicing import SlicerNotConfigured, SlicingFailed, slice_to_3mf
+from .slicing import SlicerNotConfigured, SlicingFailed, describe_failure, slice_to_3mf
 
 User = get_user_model()
 
@@ -41,12 +41,21 @@ PROJECT_SETTINGS = {
 }
 
 
-def template_3mf(project_settings=PROJECT_SETTINGS, name='template.3mf'):
+SAVED_WITH = 'OrcaSlicer-2.5.1'
+
+
+def template_3mf(project_settings=PROJECT_SETTINGS, name='template.3mf', saved_with=SAVED_WITH):
     """An upload that looks like an OrcaSlicer project: a zip with the
-    settings file in it. `project_settings=None` leaves the settings out."""
+    settings file in it. `project_settings=None` leaves the settings out;
+    `saved_with=''` leaves out which program saved it."""
     buffer = io.BytesIO()
+    application = f'<metadata name="Application">{saved_with}</metadata>' if saved_with else ''
     with zipfile.ZipFile(buffer, 'w') as archive:
-        archive.writestr('3D/3dmodel.model', '<model/>')
+        archive.writestr(
+            '3D/3dmodel.model',
+            f'<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter">\n {application}\n'
+            ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n <resources/>\n</model>',
+        )
         if project_settings is not None:
             archive.writestr('Metadata/project_settings.config', json.dumps(project_settings))
     return SimpleUploadedFile(name, buffer.getvalue())
@@ -767,6 +776,41 @@ class SlicingOutputTests(ReviewTestBase):
         command = commands[0]
         self.assertEqual(command[command.index('--datadir') + 1], '/orca/data')
         self.assertLess(command.index('--datadir'), command.index(self.template.file.path))
+
+    @override_settings(ORCA_SLICER_CMD='orca')
+    def test_newer_template_error_explains_what_to_do(self):
+        job = self.make_job(status=Job.Status.APPROVED, template=self.template)
+        output = '\n'.join(f'progress {n}' for n in range(40)) + '\nVersion Check: not supported'
+        result = mock.Mock(returncode=232, stdout=output, stderr='')
+        with mock.patch('jobs.slicing.subprocess.run', return_value=result):
+            with self.assertRaises(SlicingFailed) as caught:
+                slice_to_3mf(job)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith('OrcaSlicer exited 232 (-24): the template was saved by a newer'))
+        self.assertIn('flatpak update com.orcaslicer.OrcaSlicer', message)
+        self.assertIn('The template was saved with OrcaSlicer-2.5.1.', message)
+        # Only the end of OrcaSlicer's output is kept.
+        self.assertIn('Version Check: not supported', message)
+        self.assertNotIn('progress 10\n', message)
+
+    def test_exit_codes_are_read_as_orcaslicers_negative_codes(self):
+        for returncode, expected in (
+            (232, 'OrcaSlicer exited 232 (-24): the template was saved by a newer'),
+            (4294967272, 'OrcaSlicer exited 4294967272 (-24): the template was saved'),
+            (-24, 'OrcaSlicer exited -24: the template was saved'),
+            (204, 'OrcaSlicer exited 204 (-52): the model sticks out past the edge'),
+            (1, 'OrcaSlicer exited 1'),
+        ):
+            with self.subTest(returncode=returncode):
+                result = mock.Mock(returncode=returncode, stdout='', stderr='')
+                self.assertTrue(describe_failure(result, self.template).startswith(expected))
+        result = mock.Mock(returncode=1, stdout='', stderr='boom')
+        self.assertEqual(describe_failure(result, self.template), 'OrcaSlicer exited 1\nboom')
+
+    def test_review_page_keeps_the_errors_line_breaks(self):
+        self.make_job(status=Job.Status.APPROVED, slicing_error='OrcaSlicer exited 1\nboom')
+        self.client.force_login(self.teacher)
+        self.assertContains(self.client.get(reverse('job-review')), 'OrcaSlicer exited 1<br>boom')
 
     @override_settings(ORCA_SLICER_CMD='orca')
     def test_no_3mf_output_fails(self):

@@ -49,7 +49,7 @@
                 <td>
                     {{ job.attachment.name }}
                     <a href="{% url 'attachment-download' job.attachment.pk %}">Download file</a>
-                    {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error }}</div>{% endif %}
+                    {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error|linebreaksbr }}</div>{% endif %}
                     {% if job.dispatch_error %}<div class="error-detail">{{ job.dispatch_error }}</div>{% endif %}
                 </td>
                 <td>
