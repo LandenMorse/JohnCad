@@ -126,6 +126,33 @@ class ReviewAccessTests(ReviewTestBase):
         self.assertEqual(response.status_code, 405)
 
 
+class JobDeleteTests(ReviewTestBase):
+    def test_teacher_deletes_job(self):
+        job = self.make_job()
+        self.client.force_login(self.teacher)
+        self.client.post(reverse('job-review-delete', args=[job.pk]))
+        self.assertFalse(Job.objects.filter(pk=job.pk).exists())
+        self.assertTrue(Attachment.objects.filter(pk=self.attachment.pk).exists())
+
+    def test_student_cannot_delete(self):
+        job = self.make_job()
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.post(reverse('job-review-delete', args=[job.pk])).status_code, 403)
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
+
+    def test_cannot_delete_queued_job(self):
+        job = self.make_job()
+        Job.objects.filter(pk=job.pk).update(status=Job.Status.QUEUED)
+        self.client.force_login(self.teacher)
+        self.client.post(reverse('job-review-delete', args=[job.pk]))
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
+
+    def test_get_not_allowed(self):
+        job = self.make_job()
+        self.client.force_login(self.teacher)
+        self.assertEqual(self.client.get(reverse('job-review-delete', args=[job.pk])).status_code, 405)
+
+
 class DjangoAdminAccessTests(ReviewTestBase):
     def test_staff_cannot_use_admin(self):
         self.client.force_login(self.teacher)
@@ -279,7 +306,7 @@ class ReviewScopeTests(ReviewTestBase):
     def test_cannot_act_on_other_class_job(self):
         job = self.make_job()
         self.client.force_login(self.other_teacher)
-        for name in ('job-review-approve', 'job-review-reject'):
+        for name in ('job-review-approve', 'job-review-reject', 'job-review-delete'):
             self.assertEqual(self.client.post(reverse(name, args=[job.pk])).status_code, 404)
         job.refresh_from_db()
         self.assertEqual(job.status, Job.Status.PENDING)

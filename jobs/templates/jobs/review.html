@@ -37,34 +37,14 @@
     </div>
 </div>
 
-<div class="card">
-    <div class="table-wrap">
-    <table>
-        <thead>
-            <tr><th>Attachment</th><th>Student</th><th>Class</th><th>Printer</th><th>Uploaded</th><th>Requested</th><th>Status</th><th></th></tr>
-        </thead>
-        <tbody>
-            {% for job in jobs %}
-            <tr>
-                <td>
-                    {{ job.attachment.name }}
-                    <a href="{% url 'attachment-download' job.attachment.pk %}">Download file</a>
-                    {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error|linebreaksbr }}</div>{% endif %}
-                    {% if job.dispatch_error %}<div class="error-detail">{{ job.dispatch_error }}</div>{% endif %}
-                </td>
-                <td>
-                    {{ job.user.username }}
-                    {% if job.user.get_full_name %}<div class="cell-sub">{{ job.user.get_full_name }}</div>{% endif %}
-                </td>
-                <td>{{ job.classroom.name|default:"—" }}</td>
-                <td>
-                    {{ job.printer.name|default:"—" }}
-                    {% if job.template %}<div class="cell-sub">{{ job.template.name }}</div>{% endif %}
-                </td>
-                <td>{{ job.attachment.uploaded_at }}</td>
-                <td>{{ job.created_at }}</td>
-                <td>
-                    {% if job.slicing_state == 'waiting' %}<span class="status-badge status-approved">Waiting to slice</span>
+{% if jobs %}
+<div class="job-grid">
+    {% for job in jobs %}
+    <div class="card job-card">
+        <div class="job-card-head">
+            <h3>{{ job.attachment.name }}</h3>
+            <div>
+                {% if job.slicing_state == 'waiting' %}<span class="status-badge status-approved">Waiting to slice</span>
                     {% elif job.slicing_state == 'slicing' %}<span class="status-badge status-approved">Slicing&hellip;</span>
                     {% elif job.slicing_state == 'failed' %}<span class="status-badge status-rejected">Slicing failed</span>
                     {% elif job.dispatch_state == 'waiting' or job.dispatch_state == 'dispatching' %}<span class="status-badge status-approved">Sending to printer&hellip;</span>
@@ -72,47 +52,62 @@
                     {% elif job.dispatch_state == 'staged' %}<span class="status-badge status-queued">Waiting for plate clear</span>{% if job.release_error %}<div class="error-detail">Last release failed: {{ job.release_error }}</div>{% endif %}
                     {% elif job.dispatch_state == 'releasing' %}<span class="status-badge status-queued">Starting&hellip;</span>
                     {% else %}<span class="status-badge status-{{ job.status }}">{{ job.get_status_display }}</span>{% endif %}
-                </td>
-                <td>
-                    <div class="row-actions">
-                        {% if job.status == 'pending' or job.slicing_state == 'failed' %}
-                        <form method="post" action="{% url 'job-review-approve' job.pk %}" class="inline-form">
-                            {% csrf_token %}
-                            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
-                            <select name="target" required aria-label="Printer and template for job {{ job.pk }}">
-                                <option value="">Printer and template&hellip;</option>
-                                {% for printer in printers %}
-                                <optgroup label="{{ printer.name }}">
-                                    {% for template in printer.templates.all %}<option value="{{ printer.pk }}:{{ template.pk }}"{% if job.printer_id == printer.pk and job.template_id == template.pk %} selected{% endif %}>{{ printer.name }}: {{ template.name }}{% if template.pk == printer.default_template_id %} (default){% endif %}</option>
-                                    {% endfor %}
-                                </optgroup>
-                                {% endfor %}
-                            </select>
-                            <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
-                        </form>
-                        {% endif %}
-                        {% if job.dispatch_state == 'failed' or job.status == 'failed' %}
-                        <form method="post" action="{% url 'job-review-retry-dispatch' job.pk %}">
-                            {% csrf_token %}
-                            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
-                            <button type="submit" class="btn-success">Retry</button>
-                        </form>
-                        {% endif %}
-                        {% if job.status == 'pending' %}
-                        <form method="post" action="{% url 'job-review-reject' job.pk %}">
-                            {% csrf_token %}
-                            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
-                            <button type="submit" class="btn-danger">Reject</button>
-                        </form>
-                        {% endif %}
-                    </div>
-                </td>
-            </tr>
-            {% empty %}
-            <tr class="empty-row"><td colspan="8">No jobs yet.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+            </div>
+        </div>
+        {% if job.slicing_error %}<div class="error-detail">{{ job.slicing_error|linebreaksbr }}</div>{% endif %}
+        {% if job.dispatch_error %}<div class="error-detail">{{ job.dispatch_error }}</div>{% endif %}
+        <dl class="printer-facts">
+            <dt>Student</dt>
+            <dd>{{ job.user.username }}{% if job.user.get_full_name %}<div class="cell-sub">{{ job.user.get_full_name }}</div>{% endif %}</dd>
+            <dt>Class</dt><dd>{{ job.classroom.name|default:"—" }}</dd>
+            <dt>Printer</dt>
+            <dd>{{ job.printer.name|default:"—" }}{% if job.template %}<div class="cell-sub">{{ job.template.name }}</div>{% endif %}</dd>
+            <dt>Uploaded</dt><dd>{{ job.attachment.uploaded_at }}</dd>
+            <dt>Requested</dt><dd>{{ job.created_at }}</dd>
+        </dl>
+        <a href="{% url 'attachment-download' job.attachment.pk %}">Download file</a>
+        <div class="row-actions">
+        {% if job.status == 'pending' or job.slicing_state == 'failed' %}
+        <form method="post" action="{% url 'job-review-approve' job.pk %}" class="inline-form">
+            {% csrf_token %}
+            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
+            <select name="target" required aria-label="Printer and template for job {{ job.pk }}">
+                <option value="">Printer and template&hellip;</option>
+                {% for printer in printers %}
+                <optgroup label="{{ printer.name }}">
+                    {% for template in printer.templates.all %}<option value="{{ printer.pk }}:{{ template.pk }}"{% if job.printer_id == printer.pk and job.template_id == template.pk %} selected{% endif %}>{{ printer.name }}: {{ template.name }}{% if template.pk == printer.default_template_id %} (default){% endif %}</option>
+                    {% endfor %}
+                </optgroup>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn-success">{% if job.slicing_state == 'failed' %}Retry{% else %}Approve{% endif %}</button>
+        </form>
+        {% endif %}
+        {% if job.dispatch_state == 'failed' or job.status == 'failed' %}
+        <form method="post" action="{% url 'job-review-retry-dispatch' job.pk %}">
+            {% csrf_token %}
+            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
+            <button type="submit" class="btn-success">Retry</button>
+        </form>
+        {% endif %}
+        {% if job.status == 'pending' %}
+        <form method="post" action="{% url 'job-review-reject' job.pk %}">
+            {% csrf_token %}
+            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
+            <button type="submit" class="btn-danger">Reject</button>
+        </form>
+        {% endif %}
+        {% if job.status != 'queued' and job.status != 'working' %}
+        <form method="post" action="{% url 'job-review-delete' job.pk %}" class="job-delete" onsubmit="return confirm('Delete this job? This cannot be undone.');">
+            {% csrf_token %}
+            {% if selected_classroom %}<input type="hidden" name="classroom" value="{{ selected_classroom }}">{% endif %}
+            <button type="submit" class="btn-danger">Delete</button>
+        </form>
+        {% endif %}
     </div>
+    {% endfor %}
 </div>
+{% else %}
+<div class="card"><p class="empty-row">No jobs yet.</p></div>
+{% endif %}
 {% endblock %}

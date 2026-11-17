@@ -9,6 +9,7 @@ urlpatterns = [
     path('review/', views.review, name='job-review'),
     path('review/<int:pk>/approve/', views.review_approve, name='job-review-approve'),
     path('review/<int:pk>/reject/', views.review_reject, name='job-review-reject'),
+    path('review/<int:pk>/delete/', views.review_delete, name='job-review-delete'),
     path('review/<int:pk>/retry-dispatch/', views.review_retry_dispatch, name='job-review-retry-dispatch'),
     path('printers/', views.printers, name='printers'),
     path('printers/<int:pk>/', views.printer_detail, name='printer-detail'),

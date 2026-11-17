@@ -17,7 +17,7 @@ from . import printer_tickets
 from .dispatch import next_staged_jobs, release_next, retry_dispatch
 from .forms import AddPrinterTicketForm, JobApprovalForm, PrinterForm, SlicerTemplateForm
 from .models import AddPrinterTicket, Job, Printer, PrinterAgent, SlicerTemplate
-from .services import approve_job, delete_template, jobs_visible_to, reject_job
+from .services import approve_job, delete_job, delete_template, jobs_visible_to, reject_job
 
 
 @login_required
@@ -155,6 +155,17 @@ def review_reject(request, pk):
         messages.success(request, f'Job #{job.id} rejected.')
     else:
         messages.error(request, f'Job #{job.id} is no longer pending.')
+    return _back_to_review(request)
+
+
+@staff_required
+@require_POST
+def review_delete(request, pk):
+    job = get_object_or_404(jobs_visible_to(request.user), pk=pk)
+    if delete_job(job):
+        messages.success(request, f'Job #{pk} deleted.')
+    else:
+        messages.error(request, f'Job #{pk} is queued or printing and cannot be deleted.')
     return _back_to_review(request)
 
 

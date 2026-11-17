@@ -96,6 +96,16 @@ def reject_job(job):
     return bool(updated)
 
 
+def delete_job(job):
+    """Delete a job and its print history row. Returns False (and deletes
+    nothing) while the job is queued or printing, so a running print is never
+    orphaned. The student's uploaded file is kept."""
+    deleted, _ = Job.objects.filter(pk=job.pk).exclude(
+        status__in=[Job.Status.QUEUED, Job.Status.WORKING],
+    ).delete()
+    return bool(deleted)
+
+
 def reset_stale_claims():
     """Release jobs a crashed/killed worker claimed but never finished."""
     cutoff = timezone.now() - timedelta(seconds=settings.ORCA_SLICER_TIMEOUT + 60)
